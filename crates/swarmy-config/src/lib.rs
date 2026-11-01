@@ -772,6 +772,16 @@ pub fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
     }
 }
 
+/// Turn off Nagle's algorithm on a socket a service accepted. The node and
+/// public APIs answer small requests that often overlap on one connection;
+/// with Nagle a response written while an earlier one is unacknowledged waits
+/// a full round trip for that acknowledgement.
+pub fn without_nagle(stream: &mut tokio::net::TcpStream) {
+    if let Err(error) = stream.set_nodelay(true) {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "could not set TCP_NODELAY on an accepted connection");
+    }
+}
+
 /// How often every service reports health while running. One shared tick so
 /// the worker, API, scheduler, and gateway advertisement stay in step; the
 /// store-side heartbeat loop below drives the actual reports.
@@ -1261,6 +1271,18 @@ fn set_node_id(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+
+    #[tokio::test]
+    async fn accepted_sockets_skip_nagle() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, accepted) =
+            tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
+        let _client = client.unwrap();
+        let (mut stream, _) = accepted.unwrap();
+        without_nagle(&mut stream);
+        assert!(stream.nodelay().unwrap());
+    }
 
     pub(crate) fn load_from(
         cwd: &Path,

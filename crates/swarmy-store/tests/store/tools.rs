@@ -4,6 +4,7 @@ use swarmy_core::{
     BashArguments, BashResult, NodeCapacity, NodeId, NodeRecord, NodeRole, PlacedToolClaim,
     ToolCallId, ToolCallRecord, ToolJob,
 };
+use swarmy_store::ToolRoute;
 
 async fn setup_with(
     store: &Store,
@@ -303,7 +304,10 @@ async fn check_tool_admission(
     placement: &swarmy_core::PlacementRecord,
 ) {
     // Placed jobs already carry their dispatch fence; recovery re-resolves it.
-    assert!(store.route_tool_job(job, placement).await.unwrap());
+    assert_eq!(
+        store.route_tool_job(job, placement).await.unwrap(),
+        ToolRoute::Publish
+    );
     assert_eq!(
         store.tool_agent(job, placement.node_id).await.unwrap(),
         Some(placement.agent_id)
@@ -496,7 +500,10 @@ async fn large_tool_jobs_are_routed_and_claimed_without_object_storage_reads() {
         expires_at,
     };
     let before = blobs.gets();
-    assert!(store.route_tool_job(&jobs[0], &placement).await.unwrap());
+    assert_eq!(
+        store.route_tool_job(&jobs[0], &placement).await.unwrap(),
+        ToolRoute::Publish
+    );
     assert!(matches!(
         store.route_tool_job(&wrong, &placement).await,
         Err(StoreError::Fence(swarmy_store::FenceError::ToolJobMismatch))
@@ -550,11 +557,12 @@ async fn redispatching_a_pending_job_writes_nothing() {
     trx.add_conflict_range(&begin, &end, ConflictRangeType::Read)
         .unwrap();
     for _ in 0..2 {
-        assert!(
+        assert_eq!(
             test.store
                 .route_tool_job(&jobs[0], &placement)
                 .await
-                .unwrap()
+                .unwrap(),
+            ToolRoute::Publish
         );
     }
     trx.set(&probe, b"ok");
@@ -596,11 +604,12 @@ async fn claim_commits_on_first_attempt_while_redispatch_runs() {
         test.store
             .claim_placed_tool_racing(&claim(&jobs[0]), async {
                 for _ in 0..2 {
-                    assert!(
+                    assert_eq!(
                         test.store
                             .route_tool_job(&jobs[0], &placement)
                             .await
-                            .unwrap()
+                            .unwrap(),
+                        ToolRoute::Publish
                     );
                 }
             })
@@ -700,6 +709,53 @@ async fn deletion_racing_status_write_fences_on_computer_tombstone() {
             swarmy_store::DomainError::ComputerDeleted
         ))
     ));
+}
+
+#[tokio::test]
+async fn routing_reports_a_live_claim_and_publishes_once_it_lapses() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, _, jobs, placement) = setup(&test.store).await;
+    assert_eq!(
+        test.store
+            .route_tool_job(&jobs[0], &placement)
+            .await
+            .unwrap(),
+        ToolRoute::Publish
+    );
+    let claimed_until = Timestamp::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap();
+    assert!(
+        test.store
+            .claim_placed_tool(&PlacedToolClaim {
+                job: jobs[0].clone(),
+                owner: owner(),
+                placement: placement.clone(),
+                expires_at: claimed_until,
+            })
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        test.store
+            .route_tool_job(&jobs[0], &placement)
+            .await
+            .unwrap(),
+        ToolRoute::Claimed
+    );
+    // The claim lapsed (its node stopped renewing) while the placement lives.
+    let lapsed = claimed_until.checked_add(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        test.store
+            .clone()
+            .with_clock(move || lapsed)
+            .route_tool_job(&jobs[0], &placement)
+            .await
+            .unwrap(),
+        ToolRoute::Publish
+    );
 }
 
 #[tokio::test]

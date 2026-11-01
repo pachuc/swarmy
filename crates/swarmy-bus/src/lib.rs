@@ -392,6 +392,30 @@ impl Bus {
         queue: &WorkQueue,
         value: &T,
     ) -> Result<(), Error> {
+        self.publish_work_as(queue, value, None).await
+    }
+
+    /// Publish work under a message id. The stream keeps one message per id
+    /// within its duplicate window, so repeated publishes of the same work,
+    /// from any publisher, reach consumers once.
+    ///
+    /// # Errors
+    /// Returns encoding, publication, or persistence acknowledgement failures.
+    pub async fn publish_work_once<T: Serialize + ?Sized>(
+        &self,
+        queue: &WorkQueue,
+        value: &T,
+        id: &str,
+    ) -> Result<(), Error> {
+        self.publish_work_as(queue, value, Some(id)).await
+    }
+
+    async fn publish_work_as<T: Serialize + ?Sized>(
+        &self,
+        queue: &WorkQueue,
+        value: &T,
+        id: Option<&str>,
+    ) -> Result<(), Error> {
         let payload = encode(value)?;
         let limit = self.client.max_payload();
         if payload.len() > limit {
@@ -400,12 +424,21 @@ impl Bus {
                 limit,
             });
         }
-        self.jetstream
-            .publish(self.config.subject(&queue.subject()), payload.into())
-            .await
-            .map_err(nats)?
-            .await
-            .map_err(nats)?;
+        let subject = self.config.subject(&queue.subject());
+        let pending = match id {
+            Some(id) => {
+                let mut headers = async_nats::HeaderMap::new();
+                headers.insert(async_nats::header::NATS_MESSAGE_ID, id);
+                self.jetstream
+                    .publish_with_headers(subject, headers, payload.into())
+                    .await
+            }
+            None => self.jetstream.publish(subject, payload.into()).await,
+        };
+        let ack = pending.map_err(nats)?.await.map_err(nats)?;
+        if ack.duplicate {
+            tracing::debug!(id, stream = %ack.stream, "work publish dropped as a duplicate");
+        }
         Ok(())
     }
 

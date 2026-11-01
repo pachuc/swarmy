@@ -35,7 +35,14 @@ pub(crate) fn parse(line: &str) -> Option<Timing> {
     })
 }
 
-/// Read node logs, require tool requests, and reject slow non-registration requests.
+/// Requests outside the one-round-trip bound. Registration waits on the
+/// store's startup work. Protect carries up to a thousand chunk hashes, a
+/// body bounded by bandwidth and delay rather than round trips, and runs
+/// during volume publication, off the tool call path. Both still show in
+/// the report.
+const UNTIMED: [&str; 2] = ["/node/v1/register", "/node/v1/volume/protect"];
+
+/// Read node logs, require tool requests, and reject slow timed requests.
 ///
 /// # Errors
 /// Unreadable logs, missing tool requests, or slow requests.
@@ -64,18 +71,20 @@ pub(crate) fn check_node_logs(files: &Path, max_ms: u64) -> Result<()> {
             "the node made no tool/{action} request; the node log has no `node request` line for {path}"
         );
     }
-    let measured = timings
+    let (untimed, measured): (Vec<_>, Vec<_>) = timings
         .iter()
-        .filter(|timing| timing.path != "/node/v1/register")
-        .collect::<Vec<_>>();
-    let slowest = measured
-        .iter()
-        .map(|timing| timing.elapsed_ms)
-        .max()
-        .unwrap_or(0);
+        .partition(|timing| UNTIMED.contains(&timing.path.as_str()));
+    let slowest = |timings: &[&Timing]| {
+        timings
+            .iter()
+            .map(|timing| timing.elapsed_ms)
+            .max()
+            .unwrap_or(0)
+    };
     tracing::info!(
         requests = timings.len(),
-        slowest_ms = slowest,
+        slowest_ms = slowest(&measured),
+        slowest_untimed_ms = slowest(&untimed),
         max_ms,
         "node request timings"
     );
@@ -167,6 +176,21 @@ mod tests {
             format!(
                 "{}\n{LINE}\n{}\n",
                 line("/node/v1/register", 30_000),
+                line("/node/v1/tool/complete", 120)
+            ),
+        )
+        .unwrap();
+        assert!(check_node_logs(files.path(), 500).is_ok());
+    }
+
+    #[test]
+    fn protect_is_not_timed() {
+        let files = tempfile::tempdir().unwrap();
+        std::fs::write(
+            files.path().join("node-0.log"),
+            format!(
+                "{}\n{LINE}\n{}\n",
+                line("/node/v1/volume/protect", 3_000),
                 line("/node/v1/tool/complete", 120)
             ),
         )

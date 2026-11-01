@@ -103,6 +103,33 @@ async fn acknowledged_work_stays_acknowledged() {
 }
 
 #[tokio::test]
+async fn work_published_twice_under_one_id_is_delivered_once() {
+    run(|f| async move {
+        let queue = WorkQueue::Runnable(3);
+        let mut messages = f.bus.consume(&queue).await.unwrap();
+        f.bus
+            .publish_work_once(&queue, &42_u64, "job-1")
+            .await
+            .unwrap();
+        next(&mut messages).await.acknowledge().await.unwrap();
+        // Another copy of the same work, after the first was handled.
+        f.bus
+            .publish_work_once(&queue, &42_u64, "job-1")
+            .await
+            .unwrap();
+        f.bus
+            .publish_work_once(&queue, &43_u64, "job-2")
+            .await
+            .unwrap();
+        let delivered = next(&mut messages).await;
+        assert_eq!(delivered.value, 43);
+        delivered.acknowledge().await.unwrap();
+        assert!(timeout(ACK_WAIT * 3, messages.next()).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn oversized_work_reports_advertised_limit() {
     run(|f| async move {
         let limit = f.admin.max_payload();
