@@ -741,17 +741,26 @@ impl RuncRuntime {
 
     async fn remove(&self, id: AgentId, publish: bool) -> Result<PauseHandle> {
         self.stop(id).await?;
-        let _lifecycle = self.lifecycle.lock().await;
+        let lifecycle = self.lifecycle.lock().await;
         let entry = self.running(id).await?;
         let mut running = entry.lock().await;
         stop_tasks(&mut running).await;
         unmount(&self.bundle(id).join("rootfs")).await?;
-        let forced = self.shutdown_server(&mut running, publish).await?;
-        if forced {
+        if self.signal_server(&mut running, publish).await? {
+            // The server was aborted, so it exits at once; clear its device
+            // before another sandbox can attach one.
+            Self::await_server(&mut running, publish).await?;
             let device = std::fs::read_to_string(self.bundle(id).join("device"))?;
             swarmy_volume::kernel::cleanup_stale(Path::new(&device)).map_err(|error| {
                 Error::Operation(format!("clear discarded attachment {device}: {error}"))
             })?;
+            drop(lifecycle);
+        } else {
+            // The device is detached. A discarded attachment may still be giving
+            // up its writer lease through the node API; other sandboxes'
+            // creates and teardowns must not wait on that.
+            drop(lifecycle);
+            Self::await_server(&mut running, publish).await?;
         }
         let handle = PauseHandle {
             spec: running.journal.spec.clone(),
@@ -767,11 +776,11 @@ impl RuncRuntime {
         Ok(handle)
     }
 
-    /// Shut down one sandbox's attachment server, publishing or discarding
-    /// its journal. A detach error may arrive after the device disconnected;
+    /// Ask one sandbox's attachment server to publish or discard its journal
+    /// and detach. A detach error may arrive after the device disconnected;
     /// the server is aborted and local cleanup continues. Returns whether
     /// the caller must clear a discarded attachment from the kernel.
-    async fn shutdown_server(&self, running: &mut Running, publish: bool) -> Result<bool> {
+    async fn signal_server(&self, running: &mut Running, publish: bool) -> Result<bool> {
         let mut forced = false;
         if running
             .server
@@ -792,6 +801,12 @@ impl RuncRuntime {
                 forced = true;
             }
         }
+        Ok(forced)
+    }
+
+    /// Wait for a signalled attachment server to exit. A publish failure is
+    /// the caller's error; a discarded server's failure is only logged.
+    async fn await_server(running: &mut Running, publish: bool) -> Result<()> {
         let outcome = if let Some(mut server) = running.server.take() {
             (&mut server.0)
                 .await
@@ -805,7 +820,7 @@ impl RuncRuntime {
         } else if let Err(error) = outcome {
             tracing::warn!(error = %swarmy_core::error_chain(&error), "discarded failed attachment");
         }
-        Ok(forced)
+        Ok(())
     }
 
     /// Stop local processes and background disk activity without publication.

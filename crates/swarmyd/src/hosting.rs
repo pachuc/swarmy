@@ -496,8 +496,7 @@ impl Hosting {
         let serving = tokio::select! {
             result = serving => result,
             reason = &mut lost => {
-                self.runtime.discard_if_present(agent).await?;
-                return Err(anyhow::anyhow!("placement lease lost: {reason}"));
+                return Err(self.lease_lost(agent, &reason).await);
             }
         };
         // Keep renewing throughout the final checkpoint, which can take longer
@@ -516,11 +515,20 @@ impl Hosting {
                 }
             },
             reason = &mut lost => {
-                self.runtime.discard_if_present(agent).await?;
-                return Err(anyhow::anyhow!("placement lease lost: {reason}"));
+                return Err(self.lease_lost(agent, &reason).await);
             }
         }
         serving
+    }
+
+    /// Report a lost placement as soon as it is seen, then discard the agent's
+    /// local computer without publishing: another node may already own it.
+    async fn lease_lost(&self, agent: AgentId, reason: &str) -> anyhow::Error {
+        tracing::warn!(%agent, reason, "placement lease lost; discarding the local computer");
+        if let Err(error) = self.runtime.discard_if_present(agent).await {
+            return anyhow::Error::from(error).context("discard after placement lease loss");
+        }
+        anyhow::anyhow!("placement lease lost: {reason}")
     }
 
     /// Stop the agent's local sandbox and release its placement. A sandbox that

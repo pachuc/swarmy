@@ -249,7 +249,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
     check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
     check_requirement_release(store, &bus, &node, agent).await;
-    api_outage(&mut node, store, &bus, agent).await;
+    api_outage(&mut node, store, &bus, agent, base).await;
     crash(&mut node, store, &bus, agent).await;
     takeover(&mut node, store, &bus, agent, true).await;
     takeover(
@@ -729,7 +729,10 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
     );
 }
 
-async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
+/// A node API outage outlasts the placement: the node reports the loss and
+/// discards the computer at once, and other sandboxes keep starting while the
+/// discarded disk's writer release cannot reach the node API.
+async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, base: ManifestId) {
     let started = invoke(
         node,
         store,
@@ -756,11 +759,15 @@ async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
     );
 
     let path = device(node, agent);
+    let other = VolumeId::from_ulid(ulid::Ulid::generate());
+    store.create_volume(other, base).await.unwrap();
     let expires = store.get_by_agent(agent).await.unwrap().unwrap().expires_at;
     node.pause_api();
+    // The placement lease is 3 s; the loss is reported within a few seconds
+    // of its expiry, not after a node API request deadline.
     swarmy_testkit::eventually(
         "placement lease lost during API outage",
-        Duration::from_secs(20),
+        Duration::from_secs(10),
         async || {
             let past_deadline =
                 jiff::Timestamp::now() >= expires.checked_add(Duration::from_secs(1)).unwrap();
@@ -770,13 +777,19 @@ async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
         },
     )
     .await;
+    // Another sandbox starts while the discard's writer release cannot reach
+    // the node API, so the discard does not hold the runtime's lifecycle gate.
+    let started = std::time::Instant::now();
+    let unrelated = node.create(other).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "create waited {:?} behind the discard",
+        started.elapsed()
+    );
+    discarded(node, agent, &path, &unrelated).await;
     node.resume_api().await;
-    swarmy_testkit::eventually(
-        "outage discards device",
-        Duration::from_secs(30),
-        async || is_absent(node, agent, &path).then_some(()),
-    )
-    .await;
+    node.destroy(unrelated).await;
+    discarded_writer_expires(store, agent).await;
     let next = dispatch(
         store,
         bus,
@@ -787,6 +800,58 @@ async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
     .await;
     completed(store, &next).await;
     assert!(store.get_by_agent(agent).await.unwrap().unwrap().epoch > old.epoch);
+}
+
+/// The lapsed agent's computer is gone. A sandbox created meanwhile may reuse
+/// the freed NBD device, so the old device counts as discarded when it is free
+/// or now belongs to that sandbox.
+async fn discarded(node: &Node, agent: AgentId, path: &Path, unrelated: &Sandbox) {
+    let reused = device(node, unrelated.agent_id) == path;
+    let gone = |part: &str| {
+        !node
+            .root
+            .path()
+            .join(format!(".swarmy/node/{part}/{agent}"))
+            .exists()
+    };
+    swarmy_testkit::eventually(
+        "outage discards device",
+        Duration::from_secs(10),
+        async || {
+            (if reused {
+                gone("runc") && gone("bundles")
+            } else {
+                is_absent(node, agent, path)
+            })
+            .then_some(())
+        },
+    )
+    .await;
+}
+
+/// The discard's release could not reach the node API, so the old writer
+/// lease runs out on its own before the next epoch can bind the disk.
+async fn discarded_writer_expires(store: &Store, agent: AgentId) {
+    let volume = VolumeId::from_ulid(agent.as_ulid());
+    if let Some(lease) = store
+        .get_volume(volume)
+        .await
+        .unwrap()
+        .unwrap()
+        .writer_lease
+    {
+        swarmy_testkit::eventually(
+            "discarded writer lease expires",
+            lease
+                .expires_at
+                .duration_since(jiff::Timestamp::now())
+                .try_into()
+                .unwrap_or(Duration::ZERO)
+                + Duration::from_secs(10),
+            async || (jiff::Timestamp::now() >= lease.expires_at).then_some(()),
+        )
+        .await;
+    }
 }
 
 async fn restart_waits_for_its_old_epoch(
