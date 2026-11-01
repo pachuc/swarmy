@@ -849,6 +849,10 @@ impl RuncRuntime {
     /// Read fetch activity for a mounted agent disk without publishing it.
     /// # Errors
     /// Returns attachment transport or decoding errors.
+    pub async fn boot_set(&self, volume: swarmy_core::VolumeId) -> Result<swarmy_core::BootSet> {
+        Ok(server::boot_set(&self.config, volume).await?)
+    }
+
     pub async fn volume_stats(
         &self,
         volume: swarmy_core::VolumeId,
@@ -885,7 +889,7 @@ impl RuncRuntime {
     /// Returns attachment, mount, or container startup errors.
     pub async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
         let grant = self.metadata.open_writer(disk.volume_id).await?;
-        self.create_with(spec, disk, grant).await
+        self.create_with(spec, disk, grant, None).await
     }
     /// Create a sandbox on `disk` with a writer grant the caller already holds.
     /// # Errors
@@ -895,6 +899,7 @@ impl RuncRuntime {
         spec: SandboxSpec,
         disk: BlockDevice,
         grant: swarmy_volume::WriterGrant,
+        boot_set: Option<String>,
     ) -> Result<Sandbox> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total > 0
@@ -929,7 +934,7 @@ impl RuncRuntime {
             config,
             grant,
             None,
-            None,
+            boot_set,
             true,
             move |path| {
                 std::fs::write(&device_journal, path.as_os_str().as_encoded_bytes())?;

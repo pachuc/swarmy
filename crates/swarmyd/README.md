@@ -225,3 +225,5 @@ the volume head. GitHub credentials come from the node API only for an agent
 placed live on this node. First-tool computer re-samples use a bounded 1,024
 patch keeper queue, which drops the oldest patch when full and retries after
 failed syncs; completion patches still use the store until NA8.
+
+On a cold start the node passes the boot set from `hosting/open` to the volume server. After the first completed tool call it records the new boot set, writes it directly to object storage and reports its key to the node API. The first boot of a new image remains slow until a set has been recorded.

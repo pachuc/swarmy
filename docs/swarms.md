@@ -647,6 +647,6 @@ scripts/acceptance-hetzner-cloud.sh --provider PROVIDER --model MODEL --api-key-
 [fleet-runbook.md](fleet-runbook.md) covers the fleet; [DEV.md](DEV.md) covers
 checkout development.
 
-The latency suite runs chaos with `--node-api-host` set to the primary network
+The latency suite primes a boot set before the measured sessions; its cold-start rows include `prefetch_bytes` and `prefetch_ms`. The latency suite runs chaos with `--node-api-host` set to the primary network
 namespace address, so its isolated node can reach the node API. Chaos starts
 and may kill the node API alongside the other services.

@@ -511,10 +511,13 @@ fn observe_tool_completion(
         let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
         tokio::spawn(async move {
             if let Ok(stats) = runtime.volume_stats(volume).await {
+                let (prefetch_bytes, prefetch_ms) = prefetch_fields(&stats);
                 keeper.queue_metric(
                     session,
                     turn,
                     swarmy_node_protocol::NodeMetric::Computer(swarmy_core::ComputerMetric {
+                        prefetch_bytes,
+                        prefetch_ms,
                         first_tool_chunks_fetched: Some(stats.fetched_chunks),
                         first_tool_bytes_fetched: Some(stats.fetched_bytes),
                         first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
@@ -525,6 +528,12 @@ fn observe_tool_completion(
             }
         });
     }
+}
+
+fn prefetch_fields(stats: &swarmy_volume::DeviceStats) -> (Option<u64>, Option<f64>) {
+    let bytes = (stats.boot_prefetch_chunks > 0 || stats.boot_prefetch_ms.is_some())
+        .then_some(stats.boot_prefetch_bytes);
+    (bytes, stats.boot_prefetch_ms.map(|ms| ms as f64))
 }
 
 async fn stop_result_process(
@@ -767,6 +776,26 @@ pub(crate) async fn has_processes(
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn prefetch_fields_report_only_prefetched_boots() {
+        let mut stats = swarmy_volume::DeviceStats::default();
+        assert_eq!(super::prefetch_fields(&stats), (None, None));
+        stats.boot_prefetch_chunks = 3;
+        stats.boot_prefetch_bytes = 786_432;
+        stats.boot_prefetch_ms = Some(1200);
+        assert_eq!(
+            super::prefetch_fields(&stats),
+            (Some(786_432), Some(1200.0))
+        );
+        stats.boot_prefetch_chunks = 0;
+        stats.boot_prefetch_bytes = 0;
+        stats.boot_prefetch_ms = Some(5);
+        assert_eq!(super::prefetch_fields(&stats), (Some(0), Some(5.0)));
+        stats.boot_prefetch_chunks = 2;
+        stats.boot_prefetch_ms = None;
+        assert_eq!(super::prefetch_fields(&stats), (Some(0), None));
+    }
+
     use super::{exec_guard, helper_timeout_error, placement_refusal};
     use swarmy_core::{
         AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
