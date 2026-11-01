@@ -507,6 +507,9 @@ impl Fixture {
         }
         node.start_stopped()?;
         self.node_ready(restarted).await?;
+        // The priming session is idle, so its provider calls are all logged;
+        // drop them so the call count covers only the measured sessions.
+        std::fs::write(self.files.path().join("calls"), "")?;
         tracing::info!(%key, "boot set primed");
         Ok(())
     }
