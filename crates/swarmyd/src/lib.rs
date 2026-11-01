@@ -1,6 +1,8 @@
 //! Local node control protocol. The Unix socket is accessible only to its owner.
 mod gpu;
 mod hosting;
+mod keeper;
+mod api_metadata;
 mod memory;
 pub mod role;
 mod service;

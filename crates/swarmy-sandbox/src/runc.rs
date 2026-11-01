@@ -342,6 +342,14 @@ impl RuncRuntime {
         &self,
         mut candidates: Vec<(SystemTime, AgentId, u64)>,
     ) -> Result<()> {
+        let grant = self.metadata.open_writer(disk.volume_id).await?;
+        self.create_with(spec, disk, grant).await
+    }
+
+    /// Create with a writer already granted by hosting/open.
+    /// # Errors
+    /// Returns attachment, mount, or container startup errors.
+    pub async fn create_with(&self, spec: SandboxSpec, disk: BlockDevice, grant: WriterGrant) -> Result<Sandbox> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total == 0
             || fs2::available_space(&self.scratch_root)?
@@ -896,7 +904,6 @@ impl RuncRuntime {
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
-        let grant = self.metadata.open_writer(disk.volume_id).await?;
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
         let journal = Journal { spec, disk };
