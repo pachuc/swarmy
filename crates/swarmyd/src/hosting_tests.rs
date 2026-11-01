@@ -1,4 +1,3 @@
-
 #![deny(clippy::disallowed_methods)]
 use super::*;
 use crate::keeper::{Answered, Occupancy};

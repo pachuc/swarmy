@@ -161,10 +161,11 @@ pub async fn dispatched(store: &Store) -> Dispatched {
         .place(
             agent,
             node.node_id,
-            now.checked_add(Duration::from_secs(30)).unwrap(),
+            now.checked_add(Duration::from_secs(30))
+                .expect("test fixture setup succeeds"),
         )
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     let turn = MessageId::from_ulid(Ulid::generate());
     store
         .append_user_message(
@@ -177,15 +178,16 @@ pub async fn dispatched(store: &Store) -> Dispatched {
             },
         )
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     let session_lease = store
         .claim_lease(
             session,
             LeaseOwnerId::from_ulid(Ulid::generate()),
-            now.checked_add(Duration::from_secs(30)).unwrap(),
+            now.checked_add(Duration::from_secs(30))
+                .expect("test fixture setup succeeds"),
         )
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     let jobs: Vec<ToolJob> = (2..=3)
         .map(|step| ToolJob {
             session_id: session,
@@ -216,13 +218,19 @@ pub async fn dispatched(store: &Store) -> Dispatched {
     store
         .append_events_leased(session, 1, &events, &session_lease, now)
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     store
         .dispatch_placed_tool_jobs(session, &session_lease, &jobs, &placement)
         .await
-        .unwrap();
-    store.claim_placement(&placement).await.unwrap();
-    let token = store.issue_node_credential(node.node_id).await.unwrap();
+        .expect("test fixture setup succeeds");
+    store
+        .claim_placement(&placement)
+        .await
+        .expect("test fixture setup succeeds");
+    let token = store
+        .issue_node_credential(node.node_id)
+        .await
+        .expect("test fixture setup succeeds");
     Dispatched {
         node,
         token,
@@ -248,7 +256,10 @@ pub async fn node(store: &Store, sandboxes: u32) -> NodeRecord {
         cached_images: Vec::new(),
         gpu: None,
     };
-    store.put_node(&record).await.unwrap();
+    store
+        .put_node(&record)
+        .await
+        .expect("test fixture setup succeeds");
     record
 }
 #[allow(
@@ -273,11 +284,11 @@ pub async fn hosted_session(store: &Store) -> (swarmy_core::SessionId, swarmy_co
             },
         )
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     store
         .put_image("base", &ImageTag("test".into()), image, None)
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     store
         .create_session(
             &SessionRecord {
@@ -298,6 +309,6 @@ pub async fn hosted_session(store: &Store) -> (swarmy_core::SessionId, swarmy_co
             "base:test",
         )
         .await
-        .unwrap();
+        .expect("test fixture setup succeeds");
     (session, agent)
 }
