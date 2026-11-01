@@ -631,7 +631,7 @@ mod tests {
                 disk_bytes: 1024,
                 sandboxes: 1,
             },
-            last_heartbeat: jiff::Timestamp::now(),
+            last_heartbeat: store.now(),
             cached_images: vec![],
             gpu: None,
         };
@@ -642,9 +642,7 @@ mod tests {
             .place(
                 agent,
                 node_id,
-                jiff::Timestamp::now()
-                    .checked_add(Duration::from_secs(60))
-                    .unwrap(),
+                store.now().checked_add(Duration::from_secs(60)).unwrap(),
             )
             .await
             .unwrap();
@@ -681,17 +679,31 @@ mod tests {
             Arc::new(std::sync::Mutex::new(Occupancy::default())),
         );
         let volume = VolumeId::from_ulid(agent.as_ulid());
+        let head = ManifestId::from_ulid(ulid::Ulid::generate());
+        let header = ManifestHeader {
+            size: u64::from(swarmy_core::CHUNK_SIZE),
+            chunk_size: swarmy_core::CHUNK_SIZE,
+            root_hash: swarmy_core::ContentHash::ZERO,
+        };
+        store.put_manifest(head, &header).await.unwrap();
+        store.create_volume(volume, head).await.unwrap();
+        let writer_lease = store
+            .open_writer_lease(
+                volume,
+                swarmy_core::LeaseOwnerId::from(node_id),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap()
+            .lease;
+        let writer = keeper.hold_writer(volume, writer_lease, answered);
         let opening = Opening {
             placement: placement.clone(),
             hold,
             volume,
-            writer: None,
-            head: ManifestId::from_ulid(ulid::Ulid::generate()),
-            header: ManifestHeader {
-                size: u64::from(swarmy_core::CHUNK_SIZE),
-                chunk_size: swarmy_core::CHUNK_SIZE,
-                root_hash: swarmy_core::ContentHash::ZERO,
-            },
+            writer: Some(writer),
+            head,
+            header,
             spec: SandboxSpec {
                 agent_id: agent,
                 scratch: vec![],
@@ -717,6 +729,15 @@ mod tests {
             .unwrap();
         assert!(store.get_by_agent(agent).await.unwrap().is_none());
         assert!(!hosting.previous.lock().await.contains_key(&agent));
+        assert!(
+            store
+                .get_volume(opening.volume)
+                .await
+                .unwrap()
+                .unwrap()
+                .writer_lease
+                .is_none()
+        );
         let next = store
             .place(
                 agent,
@@ -759,6 +780,91 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("fenced"), "{error}");
         assert_eq!(store.get_by_agent(agent).await.unwrap(), Some(replacement));
+        assert_eq!(
+            hosting.previous.lock().await.get(&agent),
+            Some(&placement.epoch)
+        );
+        guard.cleanup().await;
+    }
+    #[tokio::test]
+    async fn keeper_renews_on_the_server_clock() {
+        let Some(stack) = swarmy_testkit::Stack::load("hosting-server-clock") else {
+            return;
+        };
+        let (store, mut guard) = stack
+            .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
+            .await;
+        let clock = Arc::new(std::sync::Mutex::new(
+            jiff::Timestamp::now()
+                .checked_sub(Duration::from_secs(3600))
+                .unwrap(),
+        ));
+        let manual = clock.clone();
+        let store = store.with_clock(move || *manual.lock().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let (hosting, agent, placement, opening, _api) = placed(&store, &stack, root.path()).await;
+        *clock.lock().unwrap() = placement
+            .expires_at
+            .checked_sub(Duration::from_secs(50))
+            .unwrap();
+        hosting.keeper.sync_once().await.unwrap();
+        let stored = store.get_by_agent(agent).await.unwrap().unwrap();
+        assert_eq!(
+            stored.expires_at,
+            clock
+                .lock()
+                .unwrap()
+                .checked_add(Duration::from_secs(60))
+                .unwrap()
+        );
+        let remaining = opening
+            .hold
+            .deadline()
+            .unwrap()
+            .duration_since(Instant::now());
+        assert!(
+            remaining > Duration::from_secs(53) && remaining <= Duration::from_secs(54),
+            "{remaining:?}"
+        );
+        guard.cleanup().await;
+    }
+    #[tokio::test]
+    async fn keeper_rides_out_a_node_api_outage() {
+        let Some(stack) = swarmy_testkit::Stack::load("hosting-api-outage") else {
+            return;
+        };
+        let (store, mut guard) = stack
+            .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let (hosting, agent, old, opening, mut api) = placed(&store, &stack, root.path()).await;
+        api.pause();
+        let mut sync = Box::pin(hosting.keeper.sync_once());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), &mut sync)
+                .await
+                .is_err()
+        );
+        api.resume().await;
+        tokio::time::timeout(Duration::from_secs(10), sync)
+            .await
+            .unwrap()
+            .unwrap();
+        let current = store.get_by_agent(agent).await.unwrap().unwrap();
+        assert!(current.expires_at > old.expires_at);
+        assert!(opening.hold.deadline().is_some());
+        guard.cleanup().await;
+    }
+    #[tokio::test]
+    async fn hosting_remembers_registered_epochs() {
+        let Some(stack) = swarmy_testkit::Stack::load("hosting-previous") else {
+            return;
+        };
+        let (store, mut guard) = stack
+            .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let (hosting, agent, placement, _opening, _api) = placed(&store, &stack, root.path()).await;
         assert_eq!(
             hosting.previous.lock().await.get(&agent),
             Some(&placement.epoch)

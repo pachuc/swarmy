@@ -376,6 +376,12 @@ impl Keeper {
             sent,
             server_now: answer.server_now,
         };
+        if answer.placements.len() > request.placements.len()
+            || answer.claims.len() > request.claims.len()
+            || answer.writers.len() > request.writers.len()
+        {
+            tracing::warn!("node sync returned extra renewal results; ignoring them");
+        }
         let mut tokens = self.inner.tokens.lock().expect("keeper lock poisoned");
         for (sent, renewal) in request.placements.iter().zip(answer.placements) {
             let id = sent.placement.agent_id;
@@ -410,6 +416,7 @@ impl Keeper {
                 Renewal::Lost(refusal) => {
                     e.sender
                         .send_replace(PlacementState::Lost(refusal.to_string()));
+                    tracing::info!(%id, epoch = sent.placement.epoch, "placement lease lost");
                     tokens.placements.remove(&id);
                 }
                 Renewal::Pending(_) => {}
@@ -479,6 +486,7 @@ impl Keeper {
                     e.sender.send_replace(LeaseStatus::Lost(Arc::new(
                         crate::api_metadata::fenced_or_failed(refusal),
                     )));
+                    tracing::info!(volume = %sent.volume, "writer lease lost");
                     tokens.writers.remove(&sent.volume);
                 }
                 Renewal::Pending(_) => {}
@@ -609,7 +617,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn refusal_is_final_and_dropped_holders_are_pruned() {
         let (keeper, script) = fixture();
-        let now = "2001-01-01T00:00:00Z".parse().unwrap();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
         let placement = placement(now);
         let mut hold = keeper.hold_placement(
             placement,
@@ -637,7 +645,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn renewal_reports_release_and_occupancy() {
         let (keeper, script) = fixture();
-        let now = "2001-01-01T00:00:00Z".parse().unwrap();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
         let placement = placement(now);
         let occupancy = Arc::new(Mutex::new(Occupancy {
             holder: None,
@@ -665,5 +673,129 @@ mod tests {
         );
         assert!(hold.release_requested());
         hold.released().await;
+    }
+    #[tokio::test(start_paused = true)]
+    async fn pending_keeps_deadline_and_dropped_holders_leave_sync() {
+        let (keeper, script) = fixture();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
+        let placement = placement(now);
+        let hold = keeper.hold_placement(
+            placement,
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        let deadline = hold.deadline();
+        script.answers.lock().unwrap().push_back(Ok(answer(
+            now,
+            vec![Renewal::Pending("not renewed".into())],
+        )));
+        keeper.sync_once().await.unwrap();
+        assert_eq!(hold.deadline(), deadline);
+        drop(hold);
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![])));
+        keeper.sync_once().await.unwrap();
+        assert!(script.requests.lock().unwrap()[1].placements.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn outage_shorter_than_lease_keeps_token_but_longer_loses_it() {
+        let (keeper, script) = fixture();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
+        let placement = placement(now);
+        let mut hold = keeper.hold_placement(
+            placement.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        for _ in 0..4 {
+            script
+                .answers
+                .lock()
+                .unwrap()
+                .push_back(Err(ClientError::Deadline {
+                    path: "sync",
+                    attempts: 1,
+                    last: "outage".into(),
+                }));
+            assert!(keeper.sync_once().await.is_err());
+            tokio::time::advance(Duration::from_secs(5)).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::ZERO, hold.lost())
+                .await
+                .is_err()
+        );
+        let extended = placement
+            .expires_at
+            .checked_add(Duration::from_secs(20))
+            .unwrap();
+        let mut renewed = placement;
+        renewed.expires_at = extended;
+        script.answers.lock().unwrap().push_back(Ok(answer(
+            now.checked_add(Duration::from_secs(20)).unwrap(),
+            vec![Renewal::Renewed(PlacementRenewal {
+                placement: renewed,
+                release_requested: false,
+            })],
+        )));
+        keeper.sync_once().await.unwrap();
+        assert!(hold.deadline().unwrap() > Instant::now() + Duration::from_secs(20));
+        tokio::time::advance(Duration::from_secs(28)).await;
+        assert!(hold.lost().await.contains("deadline"));
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![])));
+        keeper.sync_once().await.unwrap();
+        assert!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .placements
+                .is_empty()
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn writer_loss_fences_the_device() {
+        let (keeper, script) = fixture();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        let volume = VolumeId::from_ulid(ulid::Ulid::generate());
+        let lease = Lease {
+            owner: LeaseOwnerId::from(node),
+            seq: 1,
+            expires_at: now.checked_add(Duration::from_secs(60)).unwrap(),
+        };
+        let mut writer = keeper.hold_writer(
+            volume,
+            lease,
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+        );
+        let mut response = answer(now, vec![]);
+        response
+            .writers
+            .push(Renewal::Lost(NodeRefusal::Fenced(FenceKind::VolumeLease)));
+        script.answers.lock().unwrap().push_back(Ok(response));
+        keeper.sync_once().await.unwrap();
+        assert!(matches!(
+            &*writer.lost().await,
+            swarmy_volume::MetadataError::Fenced(swarmy_core::FenceKind::VolumeLease)
+        ));
     }
 }

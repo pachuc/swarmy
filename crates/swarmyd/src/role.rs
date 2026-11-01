@@ -67,7 +67,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let advert = advert(settings, cards)?;
     let stop = swarmy_config::shutdown_signal();
     tokio::pin!(stop);
-    let registered = tokio::select! { result = register(&client, &advert) => result?, () = &mut stop => return Ok(()) };
+    let registered = tokio::select! { result = register(&client, &advert, &settings.node.token_file) => result?, () = &mut stop => return Ok(()) };
     let keeper = Keeper::new(
         Arc::new(client.clone()),
         advert,
@@ -218,7 +218,11 @@ fn advert(
     })
 }
 
-async fn register(client: &NodeClient, advert: &NodeAdvert) -> Result<RegisterResponse> {
+async fn register(
+    client: &NodeClient,
+    advert: &NodeAdvert,
+    token_file: &std::path::Path,
+) -> Result<RegisterResponse> {
     loop {
         match client
             .register(&RegisterRequest {
@@ -228,7 +232,8 @@ async fn register(client: &NodeClient, advert: &NodeAdvert) -> Result<RegisterRe
         {
             Ok(registered) => return Ok(registered),
             Err(ClientError::Unauthorized) => anyhow::bail!(
-                "node token rejected; run swarmy-core node-credential issue {}",
+                "node token {} rejected; run swarmy-core node-credential issue {}",
+                token_file.display(),
                 client.node()
             ),
             Err(error) => {
