@@ -134,7 +134,7 @@ for rtt in ${LATENCY_RTTS:-175 400}; do
   if in_primary ./target/debug/swarmy-chaos --no-start-stack --bin-dir target/debug \
       --image base-ubuntu:dev --sessions 1 --steps 2 --kills 0 --gateways 1 \
       --session-timeout-secs 600 --prime-boot-set --node-netns "$node_ns" --node-api-host "$primary_ip" \
-      --max-node-transaction-ms "$((rtt * 4 + 150))" > "$full" 2>&1; then
+      --max-node-request-ms "$((rtt * 4 + 150))" > "$full" 2>&1; then
     echo "LATENCY_RTT=$rtt ok"
   else
     rc=1

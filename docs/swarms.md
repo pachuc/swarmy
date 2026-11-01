@@ -361,7 +361,7 @@ the creation limit, so fix the group's size and scale again.
 
 ### Distance from the primary
 
-A node registers, renews leases and opens hosting through the primary node API. The node runs no store transactions on its start or tool path: each action is one node API request. The control socket writer opening and writer release still use the store until NA10a. The node reads disk chunks from the primary's object storage. Nodes are supported up to 400 ms round trip from the primary. `scripts/node-suites/latency.sh` (run on the suite node through `suite-queue.sh --latency`) checks sandbox start and the first tool call with the node in its own network namespace at 175 ms and 400 ms round trip, and fails when any store transaction the node runs takes longer than four round trips plus 150 ms. After each round trip it prints a per-call timing table from the turn metrics (delivery, claim, run, complete, wake, total and overhead, which is the total minus the command's own time) and the cold start of each placement, ending with one `TOOL_TIMINGS` JSON line.
+A node registers, renews leases and opens hosting through the primary node API. The node runs no store transactions on its start or tool path: each action is one node API request. The control socket writer opening and writer release still use the store until NA10a. The node reads disk chunks from the primary's object storage. Nodes are supported up to 400 ms round trip from the primary. `scripts/node-suites/latency.sh` (run on the suite node through `suite-queue.sh --latency`) checks sandbox start and the first tool call with the node in its own network namespace at 175 ms and 400 ms round trip, and fails when any node API request the node makes (other than its first registration) takes longer than four round trips plus 150 ms, or when the node made no tool claim and completion requests. After each round trip it prints a per-call timing table from the turn metrics (delivery, claim, run, complete, wake, total and overhead, which is the total minus the command's own time) and the cold start of each placement, ending with one `TOOL_TIMINGS` JSON line.
 
 ### Scaleway node groups
 
@@ -430,7 +430,10 @@ Every store transaction is timed. One that takes a second or more logs a warning
 `slow store transaction`, with `caller` (the source file, line and column that ran
 it), `attempts` (how many times FoundationDB ran it, counting conflict retries),
 `elapsed_ms` and `ok`. Set `RUST_LOG=info,swarmy_store::transaction=debug` on a
-service to log every transaction the same way.
+service to log every transaction the same way. A node logs one `node request`
+line per node API request with its path, attempts, elapsed time and outcome.
+The chaos latency check uses `--max-node-request-ms` to bound those requests;
+the former node-transaction timing option is gone.
 
 Host swarms default to the primary host's `swarmyd` journal. Pass
 `--host NAME` to select another recorded host, or `--unit swarmyd` to select
