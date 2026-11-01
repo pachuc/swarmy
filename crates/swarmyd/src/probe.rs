@@ -66,7 +66,7 @@ async fn settle(message: &WorkMessage<ImageProbe>, outcome: Result<()>) {
 
 /// A failed probe is retried after a short delay; an expired ack also redelivers.
 async fn release(message: &WorkMessage<ImageProbe>, failure: &anyhow::Error) {
-    tracing::warn!(error = %swarmy_core::error_chain(failure), "image probe failed");
+    tracing::warn!(error = %swarmy_core::error_chain(failure.as_ref()), "image probe failed");
     if let Err(error) = message
         .negative_acknowledge(Some(Duration::from_secs(30)))
         .await
