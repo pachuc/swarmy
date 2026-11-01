@@ -1089,7 +1089,7 @@ mod tests {
             leaves: vec![],
             chunks: vec![hashes[4]],
         };
-        let (_, read) = tokio::join!(device.prefetch_boot_set(&set, 1), async {
+        let ((), read) = tokio::join!(device.prefetch_boot_set(&set, 1), async {
             tokio::task::yield_now().await;
             device.read(4 * u64::from(CHUNK_SIZE), 4096).await
         });
