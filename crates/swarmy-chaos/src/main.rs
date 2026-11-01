@@ -542,8 +542,8 @@ impl Fixture {
         // Stop consumers before taking the final call count, including any unexpected late retry.
         for process in &mut self.processes {
             process.check()?;
-            process.stop().await?;
         }
+        self.stop_all().await?;
         for id in &self.sessions {
             let session = self
                 .store
@@ -588,10 +588,17 @@ impl Fixture {
         Ok(gateway_kills)
     }
 
-    async fn cleanup(&mut self) -> Result<()> {
-        for process in &mut self.processes {
+    /// Stop every service in reverse start order, so a node shuts down while
+    /// the node API it flushes volumes and releases computers through still serves.
+    pub(crate) async fn stop_all(&mut self) -> Result<()> {
+        for process in self.processes.iter_mut().rev() {
             process.stop().await?;
         }
+        Ok(())
+    }
+
+    async fn cleanup(&mut self) -> Result<()> {
+        self.stop_all().await?;
         let blobs = ObjectBlobStore::from_env()?;
         for id in &self.sessions {
             if let Some(session) = self.store.fetch_session(*id).await?
