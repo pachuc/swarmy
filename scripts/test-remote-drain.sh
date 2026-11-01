@@ -20,6 +20,7 @@ esac
 SH
 cat > "$root/bin/swarmy-node" <<'SH'
 #!/usr/bin/env bash
+[[ $# == 1 && $1 == --upgrade-processes ]] || exit 1
 line=$(head -1 "$FAKE_ROOT/busy")
 printf '%s\n' "$line"
 sed -i '1d' "$FAKE_ROOT/busy"
