@@ -20,6 +20,7 @@ pub(super) enum Format {
 
 pub(super) struct Options {
     pub dirty_paths: Vec<String>,
+    pub swarm_name: String,
     pub allow_dirty: bool,
     pub scope: Scope,
     pub drain_timeout: Duration,
@@ -35,6 +36,7 @@ impl Options {
     ) -> Self {
         Self {
             dirty_paths: Vec::new(),
+            swarm_name: String::new(),
             allow_dirty,
             scope: if services_only {
                 Scope::ServicesOnly
@@ -158,11 +160,7 @@ pub(super) async fn run_with(
     let primary = primary.ok_or_else(|| {
         crate::Error::other(format!(
             "swarm {} has no stack host with services; upgrade needs the primary's node API",
-            nodes.first().map_or("unknown", |node| node
-                .name
-                .split('-')
-                .next()
-                .unwrap_or("unknown"))
+            options.swarm_name
         ))
     })?;
     let mut summaries = Vec::new();

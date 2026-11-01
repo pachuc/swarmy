@@ -1118,13 +1118,9 @@ async fn upgrade_refuses_a_swarm_without_a_primary() {
     }
     let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
     let host = NoPrimary(FakeUpgradeHost::default());
-    let error = upgrade::run(
-        &host,
-        &machines,
-        upgrade::Options::new(false, false, 17, false),
-    )
-    .await
-    .unwrap_err();
+    let mut options = upgrade::Options::new(false, false, 17, false);
+    options.swarm_name = "fleet".into();
+    let error = upgrade::run(&host, &machines, options).await.unwrap_err();
     assert!(
         error
             .to_string()

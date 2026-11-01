@@ -968,6 +968,7 @@ pub async fn upgrade_swarm_with(
         options.json,
     );
     policy.dirty_paths = host.checkout_changes()?;
+    policy.swarm_name.clone_from(&spec.name);
     let bucket = effective_bucket(registry, spec, &record, None)?;
     let machines = upgrade_machines(&record, spec, bucket.as_ref());
     upgrade::run_with(&host, &machines, policy, on_summary).await

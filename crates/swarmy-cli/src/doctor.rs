@@ -713,8 +713,7 @@ mod tests {
                 .iter()
                 .any(|check| check.name == "node-api" && check.status == "fail")
         );
-        let mut live = checks.clone();
-        live.clear();
+        let mut live = Vec::new();
         let snapshot: Snapshot = serde_json::from_value(json!({
             "services": [{"role":"node_api", "instance_id":"api1", "version":"0.1.0", "alive":true,
                 "providers":[], "capacity":null}], "images":[], "default_image":null,
