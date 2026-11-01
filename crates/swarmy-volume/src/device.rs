@@ -242,6 +242,24 @@ impl VolumeDevice {
         .await
     }
 
+    async fn ensure_manifest_identity(
+        dirty_dir: &Path,
+        header: &swarmy_core::ManifestHeader,
+    ) -> Result<()> {
+        let identity = encode(header)?;
+        let identity_path = dirty_dir.join("manifest");
+        match fs::read(&identity_path).await {
+            Ok(existing) if existing != identity => return Err(VolumeError::Corrupt),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::write(&identity_path, identity).await?;
+                fs::File::open(&identity_path).await?.sync_all().await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
     /// Open with a maximum number of concurrent chunk uploads. The default in
     /// `open` is 32, limiting prepared chunk data to 8 MiB per batch. Object
     /// storage may allocate additional request buffers.
@@ -266,17 +284,7 @@ impl VolumeDevice {
             .write(true)
             .open(dirty_dir.join("lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
-        let identity = encode(manifest.header())?;
-        let identity_path = dirty_dir.join("manifest");
-        match fs::read(&identity_path).await {
-            Ok(existing) if existing != identity => return Err(VolumeError::Corrupt),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::write(&identity_path, identity).await?;
-                fs::File::open(&identity_path).await?.sync_all().await?;
-            }
-            Err(error) => return Err(error.into()),
-        }
+        Self::ensure_manifest_identity(dirty_dir, manifest.header()).await?;
         let count = usize::try_from(manifest.header().size / BLOCK_SIZE)
             .map_err(|_| VolumeError::InvalidDiskSize)?;
         let mut map = fs::OpenOptions::new()
@@ -404,7 +412,7 @@ impl VolumeDevice {
     pub fn take_boot_set(&self) -> BootSet {
         self.recorder
             .lock()
-            .expect("recorder mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .map_or_else(BootSet::default, Recorder::finish)
     }
@@ -824,20 +832,19 @@ impl VolumeDevice {
         Ok((mode != Fetch::Boot).then_some(bytes))
     }
 
-    /// Load leaves in parallel, then fill the shared chunk cache without blocking unrelated demand reads.
-    pub async fn prefetch_boot_set(self: &Arc<Self>, set: &BootSet, concurrency: usize) {
-        let start = Instant::now();
+    async fn prefetch_leaves(&self, set: &BootSet) {
         let leaf_count = self
             .manifest
             .header()
             .size
-            .div_ceil(CHUNK_SIZE as u64 * BLOCKS_PER_LEAF as u64);
+            .div_ceil(u64::from(CHUNK_SIZE) * BLOCKS_PER_LEAF as u64);
         let results = futures::future::join_all(
             set.leaves
                 .iter()
                 .copied()
                 .filter(|&index| u64::from(index) < leaf_count)
-                .map(|index| self.leaf(usize::try_from(index).expect("leaf index fits usize"))),
+                .filter_map(|index| usize::try_from(index).ok())
+                .map(|index| self.leaf(index)),
         )
         .await;
         for result in results {
@@ -845,6 +852,12 @@ impl VolumeDevice {
                 tracing::debug!(error = %swarmy_core::error_chain(&error), "boot set leaf fetch failed");
             }
         }
+    }
+
+    /// Load leaves in parallel, then fill the shared chunk cache without blocking unrelated demand reads.
+    pub async fn prefetch_boot_set(self: &Arc<Self>, set: &BootSet, concurrency: usize) {
+        let start = Instant::now();
+        self.prefetch_leaves(set).await;
         let mut requests = stream::iter(set.chunks.iter().copied())
             .map(|hash| self.fill(hash, Fetch::Boot))
             .buffer_unordered(concurrency.max(1));
