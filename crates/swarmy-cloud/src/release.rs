@@ -71,7 +71,12 @@ impl Component {
     #[must_use]
     pub const fn files(self) -> &'static [&'static str] {
         match self {
-            Self::Core => &["swarmy-core", "swarmy-node", "swarmy-provisioner", "libfdb_c.so"],
+            Self::Core => &[
+                "swarmy-core",
+                "swarmy-node",
+                "swarmy-provisioner",
+                "libfdb_c.so",
+            ],
             Self::Client => &["swarmy"],
             Self::BaseImage => &["disk.ext4", "recipe.toml"],
         }
@@ -349,6 +354,7 @@ mod tests {
             .unwrap();
         assert!(dir.join("swarmy-core").is_file());
         assert!(dir.join("libfdb_c.so").is_file());
+        assert!(dir.join("swarmy-node").is_file());
         assert!(dir.join(".sha256").is_file());
         assert_eq!(
             dir,

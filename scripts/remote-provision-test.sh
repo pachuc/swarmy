@@ -40,6 +40,9 @@ parse_provision_args
 [[ $(release_bundle_dir /x) == /x/.swarmy/release ]]
 bundle=$(mktemp -d)
 trap 'rm -rf "$bundle"' EXIT
+printf '#!/bin/sh\n' > "$bundle/swarmy-node"
+chmod +x "$bundle/swarmy-node"
+check_release_bundle "$bundle" node
 printf '#!/bin/sh\n' > "$bundle/swarmy-core"
 chmod +x "$bundle/swarmy-core"
 touch "$bundle/libfdb_c.so"
@@ -52,13 +55,17 @@ printf '#!/bin/sh\n' > "$bundle/swarmy-provisioner"
 chmod +x "$bundle/swarmy-provisioner"
 check_release_bundle "$bundle" stack
 rm "$bundle/libfdb_c.so"
-if check_release_bundle "$bundle" node 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
-zero=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist)
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
+check_release_bundle "$bundle" node
+zero=$(node_environment stack /tmp/checkout 0 /this-mount-does-not-exist)
 [[ $zero == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero == *'SWARMY_NODE_SANDBOXES=0'* ]]
 [[ $zero == *'SWARMY_NODE_DISK_BYTES=0'* ]]
 [[ $zero =~ SWARMY_NODE_MEMORY_BYTES=[0-9]+ ]]
-positive=$(node_environment /tmp/checkout 4 /tmp)
+positive=$(node_environment node /tmp/checkout 4 /tmp)
+[[ $positive != *SWARMY_FDB_CLUSTER_FILE* && $positive != *LD_LIBRARY_PATH* ]]
+stack_env=$(node_environment stack /tmp/checkout 4 /tmp)
+[[ $stack_env == *SWARMY_FDB_CLUSTER_FILE* && $stack_env == *LD_LIBRARY_PATH=/tmp/.local/lib* ]]
 [[ $positive == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
 [[ $positive == *'SWARMY_NODE_API_URL=http://127.0.0.1:8743'* ]]
 [[ $positive == *'SWARMY_NODE_TOKEN_FILE=/etc/swarmy/node-token'* ]]
@@ -78,7 +85,7 @@ grep -q 'at least 3840 MiB' "$bundle/memory-err"
 printf 'MemTotal:        3932160 kB\n' > "$bundle/meminfo"
 [[ $(SWARMY_MEMINFO=$bundle/meminfo node_memory_bytes) == 805306368 ]]
 SWARMY_MEMINFO=$bundle/meminfo check_node_memory 1
-zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist example-bucket eu-west-1)
+zero_bucket=$(node_environment stack /tmp/checkout 0 /this-mount-does-not-exist example-bucket eu-west-1)
 [[ $zero_bucket == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero_bucket == *'SWARMY_NODE_SANDBOXES=0'* ]]
 [[ $zero_bucket == *'SWARMY_NODE_DISK_BYTES=0'* ]]
@@ -87,12 +94,12 @@ zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist exampl
 [[ $zero_bucket == *'SWARMY_S3_REGION=eu-west-1'* ]]
 [[ $zero_bucket == *'SWARMY_DEV_SKIP_S3=1'* ]]
 [[ $zero_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=true'* ]]
-positive_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1)
+positive_bucket=$(node_environment stack /tmp/checkout 4 /tmp example-bucket eu-west-1)
 [[ $positive_bucket == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
 [[ $positive_bucket == *'SWARMY_NODE_SANDBOXES=4'* ]]
 [[ $positive_bucket == *'SWARMY_S3_BUCKET=example-bucket'* ]]
 # The service library derives from the checkout, never a hardcoded login.
-[[ $positive == *'LD_LIBRARY_PATH=/tmp/.local/lib'* ]]
+[[ $stack_env == *'LD_LIBRARY_PATH=/tmp/.local/lib'* ]]
 [[ $positive != *ubuntu* ]]
 [[ $zero != *ubuntu* ]]
 
@@ -146,7 +153,7 @@ for invalid in relative dir: device: dir:relative; do
 done
 # Static buckets carry no key lines at all: the keys are merged later by
 # merge_static_s3_keys, and empty lines ahead of the real ones would be stale.
-static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team false true)
+static_bucket=$(node_environment stack /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team false true)
 [[ $static_bucket == *'SWARMY_S3_ENDPOINT=https://objects.example.invalid'* ]]
 [[ $static_bucket == *'SWARMY_S3_PREFIX=runs/team'* ]]
 [[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
@@ -190,7 +197,7 @@ if read_shared_list probe_result empty_producer >/dev/null 2>&1; then
     exit 1
 fi
 swarmy_unit_table() { return 1; }
-if read_shared_list probe_result swarmy_mode_build_args stack >/dev/null 2>&1; then
+if read_shared_list probe_result swarmy_unit_names >/dev/null 2>&1; then
     echo 'failing unit table looked fine' >&2
     exit 1
 fi
@@ -223,7 +230,7 @@ set_unit_inputs stack deploy-user '' false /mnt/swarmy-local
 node_text=$(render_unit swarmyd.service)
 [[ $node_text == *'Requires=swarmy-stack.service'* ]]
 [[ $node_text == *'RequiresMountsFor=/mnt/swarmy-local'* ]]
-[[ $node_text == *'ExecStart=/usr/local/bin/swarmy-core node'* ]]
+[[ $node_text == *'ExecStart=/usr/local/bin/swarmy-node'* ]]
 [[ $node_text == *'WorkingDirectory=/home/deploy-user/swarmy'* ]]
 stack_text=$(render_unit swarmy-stack.service)
 [[ $stack_text == *'User=deploy-user'* ]]
@@ -232,10 +239,10 @@ provisioner_text=$(render_unit "$(swarmy_provisioner_unit)")
 [[ $provisioner_text == *'ExecStart=/usr/local/bin/swarmy-provisioner'* ]]
 [[ $provisioner_text == *'KillMode=mixed'* ]]
 [[ $provisioner_text == *'Requires=swarmy-stack.service'* ]]
-[[ $(swarmy_mode_binaries stack) == $'swarmy\nswarmy-core\nswarmy-provisioner' ]]
-[[ $(swarmy_mode_binaries node) == 'swarmy-core' ]]
-[[ $(swarmy_mode_build_args stack) == $'-p\nswarmy-core-bin\n-p\nswarmy-provisioner' ]]
-[[ $(swarmy_mode_build_args node) == $'-p\nswarmy-core-bin' ]]
+[[ $(swarmy_mode_binaries stack) == $'swarmy\nswarmy-core\nswarmy-node\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_binaries node) == 'swarmy-node' ]]
+[[ $(swarmy_mode_build_args stack) == $'-p\nswarmy-core-bin\n-p\nswarmyd\n-p\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_build_args node) == $'-p\nswarmyd' ]]
 scheduler_text=$(render_unit swarmy-scheduler.service)
 [[ $scheduler_text == *'ExecStart=/usr/local/bin/swarmy-core scheduler'* ]]
 [[ $scheduler_text == *'Requires=swarmy-stack.service'* ]]
@@ -244,10 +251,11 @@ node_text=$(render_unit swarmyd.service)
 [[ $node_text == *'Wants=swarmy-tunnel.service'* && $node_text != *RequiresMountsFor* ]]
 tunnel_text=$(render_unit swarmy-tunnel.service)
 [[ $tunnel_text == *'-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1'* ]]
-for expected in '-L 127.0.0.1:4500:127.0.0.1:4500' '-L 127.0.0.1:8743:127.0.0.1:8743' '-o ServerAliveInterval=5' '-o ServerAliveCountMax=3'; do
+for expected in '-L 127.0.0.1:8743:127.0.0.1:8743' '-o ServerAliveInterval=5' '-o ServerAliveCountMax=3'; do
     [[ $tunnel_text == *"$expected"* ]]
 done
-[[ $tunnel_text != *ServerAliveInterval=15* ]]
+[[ $tunnel_text != *ServerAliveInterval=15* && $tunnel_text != *4500* ]]
+[[ $tunnel_text == *'/dev/tcp/127.0.0.1/8743'* ]]
 node_api_text=$(render_unit swarmy-node-api.service)
 [[ $(swarmy_service_units) == *swarmy-node-api.service* ]]
 [[ $node_api_text == *'ExecStart=/usr/local/bin/swarmy-core node-api'* ]]

@@ -107,7 +107,7 @@ if grep -q swarmy-stack.service "$root/install.log"; then echo 'stack unit was r
 [[ $(stat -c %Y "$SWARMY_SYSTEMD_DIR/swarmy-stack.service") == "$stack_mtime" ]]
 [[ $(wc -l < "$root/systemctl.log") == 1 ]]
 grep -qx 'systemctl daemon-reload' "$root/systemctl.log"
-grep -qx 'ExecStart=/usr/local/bin/swarmy-core node' "$SWARMY_SYSTEMD_DIR/swarmyd.service"
+grep -qx 'ExecStart=/usr/local/bin/swarmy-node' "$SWARMY_SYSTEMD_DIR/swarmyd.service"
 grep -qx 'RequiresMountsFor=/mnt/swarmy-local' "$SWARMY_SYSTEMD_DIR/swarmyd.service"
 changed=()
 reconcile_units changed swarmy-stack.service swarmyd.service swarmy-scheduler.service
@@ -203,7 +203,7 @@ for role in scheduler worker gateway api; do
 done
 printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
 printf '[api]\ntoken = "existing"\n' > "$node_repo/.swarmy/config.toml"
-for binary in swarmy swarmy-core swarmy-provisioner libfdb_c.so; do
+for binary in swarmy swarmy-core swarmy-node swarmy-provisioner libfdb_c.so; do
     printf '#!/usr/bin/env bash\necho "[]"\n' > "$node_repo/.swarmy/release/$binary"
     chmod +x "$node_repo/.swarmy/release/$binary"
 done

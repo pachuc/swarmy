@@ -409,8 +409,14 @@ impl Binaries {
         Self::installed_from(&std::env::current_exe()?)
     }
     fn installed_from(exe: &Path) -> Result<Self> {
-        let node = exe.parent().ok_or_else(|| crate::Error::other("executable has no parent"))?.join("swarmy-node");
-        crate::Error::ensure(node.is_file(), format!("missing swarmy-node at {}", node.display()))?;
+        let node = exe
+            .parent()
+            .ok_or_else(|| crate::Error::other("executable has no parent"))?
+            .join("swarmy-node");
+        crate::Error::ensure(
+            node.is_file(),
+            format!("missing swarmy-node at {}", node.display()),
+        )?;
         Ok(Self::Installed { node })
     }
 }
@@ -528,13 +534,7 @@ impl Ssh {
             ),
         )?;
         cloud_out!("Uploading this primary's swarmy-node build");
-        Self::upload_bundle(
-            node,
-            address,
-            node_dir,
-            &[binary.to_owned()],
-        )
-        .await
+        Self::upload_bundle(node, address, node_dir, &[binary.to_owned()]).await
     }
 
     async fn upload_bundle(
@@ -1775,15 +1775,17 @@ mod tests {
     fn tunnel_key_authorization_restricts_sessions_and_destinations() {
         let entry = tunnel_authorization("ssh-ed25519 AAAA+/= arbitrary comment\n", true).unwrap();
         assert!(entry.starts_with("restrict,port-forwarding,command=\"/bin/false\","));
-        for port in [4500, 4222, 8743, 8333] {
+        for port in [4222, 8743, 8333] {
             assert!(entry.contains(&format!("permitopen=\"127.0.0.1:{port}\"")));
         }
         assert!(entry.ends_with(" ssh-ed25519 AAAA+/="));
         let no_bucket = tunnel_authorization("ssh-ed25519 AAAA+/=", false).unwrap();
-        for port in [4500, 4222, 8743] {
+        for port in [4222, 8743] {
             assert!(no_bucket.contains(&format!("127.0.0.1:{port}")));
         }
         assert!(!no_bucket.contains("8333"));
+        assert!(!entry.contains("4500"));
+        assert!(!no_bucket.contains("4500"));
         for key in [
             "",
             "ssh-rsa AAAA",
@@ -1922,32 +1924,23 @@ mod provisioning_command_tests {
     }
 
     #[test]
-    fn installed_binaries_come_from_the_executable_dir_and_loaded_library() {
+    fn installed_binaries_come_from_the_executable_dir() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("swarmy-provisioner");
+        std::fs::write(&exe, "binary").unwrap();
         assert!(
-            super::Binaries::installed_from(&exe, "")
+            super::Binaries::installed_from(&exe)
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("swarmy-core")
+                .contains("swarmy-node")
         );
-        std::fs::write(dir.path().join("swarmy-core"), "binary").unwrap();
-        assert!(
-            super::Binaries::installed_from(&exe, "")
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("no libfdb_c.so loaded")
-        );
-        let maps = "00400000-00452000 r-xp 00000000 00:00 0 /opt/x/libfdb_c.so";
-        let super::Binaries::Installed { node: binary } =
-            super::Binaries::installed_from(&exe, maps).unwrap()
+        std::fs::write(dir.path().join("swarmy-node"), "binary").unwrap();
+        let super::Binaries::Installed { node } = super::Binaries::installed_from(&exe).unwrap()
         else {
             panic!("expected installed binaries")
         };
-        assert_eq!(core, dir.path().join("swarmy-core"));
-        assert_eq!(library, std::path::Path::new("/opt/x/libfdb_c.so"));
+        assert_eq!(node, dir.path().join("swarmy-node"));
     }
 
     #[test]

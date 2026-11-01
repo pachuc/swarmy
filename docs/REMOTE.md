@@ -145,7 +145,7 @@ checkpoint when their leases expire.
 Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
 matching client. The `units` list should include `swarmyd.service` and the
 installed service units. Check `systemctl cat swarmyd.service` for
-`ExecStart=/usr/local/bin/swarmy-core node`, and inspect
+`ExecStart=/usr/local/bin/swarmy-node`, and inspect
 `ls /usr/local/bin`. Old binaries are removed once no installed unit refers
 to them. Do not use down to fix an upgrade: down removes the backing stack's
 data. If installed service settings do not match, inspect
@@ -171,9 +171,9 @@ primary, preserving cluster identity and loopback coordinator address. Node
 add generates a dedicated tunnel key on the joining host, authorizes only
 service forwards on the primary, and pins the primary's host key through the
 authenticated provisioning connection. The key allows no interactive shell.
-The tunnel forwards local 4500, 4222 and 8743 to the primary's loopback ports;
+The tunnel forwards local 4222 and 8743 to the primary's loopback ports;
 8743 reaches the node API. It forwards 8333 only when SeaweedFS is used. The
-primary's tunnel key line permits 4500, 4222 and 8743, and permits 8333 only
+primary's tunnel key line permits 4222 and 8743, and permits 8333 only
 without a bucket. SSH checks the link every 5 seconds and restarts after three
 misses. Join issues each node's API token on the primary and copies it over
 SSH standard input to `/etc/swarmy/node-token` (root-owned, mode 0600). The
