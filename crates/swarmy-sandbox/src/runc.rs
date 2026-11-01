@@ -886,18 +886,10 @@ impl RuncRuntime {
         }
         result
     }
-    /// Create a sandbox on `disk`, opening its writer through the runtime metadata.
-    /// Used by the control socket and resume.
-    /// # Errors
-    /// Returns attachment, mount, or container startup errors.
-    pub async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
-        let grant = self.metadata.open_writer(disk.volume_id).await?;
-        self.create_with(spec, disk, grant, None).await
-    }
     /// Create a sandbox on `disk` with a writer grant the caller already holds.
     /// # Errors
     /// Returns attachment, mount, or container startup errors.
-    pub async fn create_with(
+    pub async fn create(
         &self,
         spec: SandboxSpec,
         disk: BlockDevice,
@@ -1088,8 +1080,12 @@ impl RuncRuntime {
     /// Resume a sandbox.
     /// # Errors
     /// Returns the same errors as a cold create.
-    pub async fn resume(&self, handle: PauseHandle) -> Result<Sandbox> {
-        self.create(handle.spec, handle.disk).await
+    pub async fn resume(
+        &self,
+        handle: PauseHandle,
+        grant: swarmy_volume::WriterGrant,
+    ) -> Result<Sandbox> {
+        self.create(handle.spec, handle.disk, grant, None).await
     }
     /// Destroy a sandbox.
     /// # Errors
@@ -1377,17 +1373,11 @@ mod scratch_inventory_tests {
     use super::*;
     use std::num::NonZeroUsize;
     use swarmy_core::{ContentHash, Lease, ManifestHeader, ManifestId, NodeId, VolumeId};
-    use swarmy_volume::{MetadataError, VolumeMetadata, WriterGrant};
+    use swarmy_volume::{MetadataError, VolumeMetadata};
 
     struct Metadata;
     #[async_trait::async_trait]
     impl SandboxMetadata for Metadata {
-        async fn open_writer(
-            &self,
-            _: VolumeId,
-        ) -> std::result::Result<WriterGrant, MetadataError> {
-            Err(MetadataError::VolumeMissing)
-        }
         async fn github_token(
             &self,
             _: AgentId,

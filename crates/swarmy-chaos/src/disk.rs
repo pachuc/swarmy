@@ -95,6 +95,9 @@ pub(crate) async fn verify(
     )
     .await?;
     let result = async {
+        let grant = store
+            .open_volume_writer(volume_id, swarmy_core::LeaseOwnerId::from(node))
+            .await?;
         let sandbox = runtime
             .create(
                 SandboxSpec {
@@ -103,6 +106,8 @@ pub(crate) async fn verify(
                     requirements: swarmy_core::SandboxRequirements::default(),
                 },
                 BlockDevice { volume_id },
+                grant,
+                None,
             )
             .await?;
         let (send, mut receive) = tokio::sync::mpsc::channel(16);

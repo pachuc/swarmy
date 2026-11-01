@@ -16,7 +16,6 @@ use swarmy_node_protocol::{
     ScratchVerdict,
 };
 use swarmy_sandbox::{RuncRuntime, RuntimeOptions, ScratchPolicy};
-use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
 use tokio::sync::watch;
 use tokio::{net::UnixListener, task::JoinSet};
@@ -32,7 +31,6 @@ pub fn run(args: Vec<OsString>) -> Result<()> {
     }
     swarmy_config::init_tracing();
     let loaded = swarmy_config::Settings::load()?;
-    let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
         let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;
@@ -60,7 +58,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         !settings.node.roles.is_empty(),
         "node roles must not be empty"
     );
-    let (store, objects) = storage(settings).await?;
+    let objects = swarmy_volume::objects::from_settings(settings)?;
     let bus_config = settings.bus.bus_config()?;
     let bus = swarmy_bus::Bus::connect(&settings.bus.nats_url, bus_config.clone()).await?;
     let node = loaded.node_id()?;
@@ -83,7 +81,6 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         &loaded,
         root.clone(),
         node,
-        store.clone(),
         client.clone(),
         objects,
         node_gpu,
@@ -127,8 +124,9 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
                     let (socket, _) = connection?;
                     let runtime = runtime.clone();
                     let shutdown = shutdown.subscribe();
+                    let keeper = keeper.clone();
                     clients.spawn(async move {
-                        if let Err(error) = service::handle(socket, runtime, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&*error), "node control request failed"); }
+                        if let Err(error) = service::handle(socket, runtime, keeper, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&*error), "node control request failed"); }
                     });
                 }
                 Some(result) = clients.join_next(), if !clients.is_empty() => { result?; }
@@ -204,7 +202,6 @@ async fn open_runtime(
     loaded: &swarmy_config::Loaded,
     root: std::path::PathBuf,
     node: swarmy_core::NodeId,
-    store: Store,
     client: NodeClient,
     objects: Arc<dyn object_store::ObjectStore>,
     gpu: swarmy_sandbox::NodeGpu,
@@ -217,14 +214,10 @@ async fn open_runtime(
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
                 node,
-                metadata: Arc::new(NodeVolumeMetadata::new(
-                    client.clone(),
-                    store.clone(),
-                    heads.clone(),
-                )),
+                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), heads.clone())),
                 objects,
             },
-            NodeSandboxMetadata::new(client, store, node),
+            NodeSandboxMetadata::new(client),
             RuntimeOptions {
                 scratch: ScratchPolicy {
                     idle_days: settings.sandbox.scratch_idle_days,
@@ -237,13 +230,6 @@ async fn open_runtime(
         .await?,
     );
     Ok((runtime, heads))
-}
-
-async fn storage(
-    settings: &swarmy_config::Settings,
-) -> Result<(Store, Arc<dyn object_store::ObjectStore>)> {
-    let opened = Store::open_store(settings).await?;
-    Ok((opened.store, opened.blobs.object_store()))
 }
 
 fn advertised_memory(reserve_mib: u64) -> Result<u64> {
@@ -327,7 +313,7 @@ mod node_api_tests {
     use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
     use swarmy_node_protocol::RegisterRequest;
     use swarmy_sandbox::SandboxMetadata;
-    use swarmy_store::{CreateAgentOptions, blob::MemoryBlobStore};
+    use swarmy_store::{CreateAgentOptions, Store, blob::MemoryBlobStore};
 
     async fn fixture(
         tag: &str,
@@ -425,7 +411,7 @@ mod node_api_tests {
             )
             .await
             .unwrap();
-        let metadata = NodeSandboxMetadata::new(client, store.clone(), node);
+        let metadata = NodeSandboxMetadata::new(client);
         assert_eq!(
             metadata
                 .github_token(agent.agent_id)
@@ -513,14 +499,10 @@ mod node_api_tests {
             ServerConfig {
                 directory: root.path().join("volumes"),
                 node,
-                metadata: Arc::new(NodeVolumeMetadata::new(
-                    client.clone(),
-                    store.clone(),
-                    Heads::default(),
-                )),
+                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), Heads::default())),
                 objects: Arc::new(object_store::memory::InMemory::new()),
             },
-            NodeSandboxMetadata::new(client, store.clone(), node),
+            NodeSandboxMetadata::new(client),
         )
         .await
         .unwrap();

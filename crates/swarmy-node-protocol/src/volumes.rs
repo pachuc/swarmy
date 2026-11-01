@@ -8,6 +8,11 @@ pub struct VolumePublishRequest {
     pub next: swarmy_core::ManifestId,
     pub header: swarmy_core::ManifestHeader,
 }
+/// Release a writer lease owned by the calling node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeReleaseRequest {
+    pub writer: WriterToken,
+}
 /// Content reused by the node that a collector must preserve.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VolumeProtectRequest {

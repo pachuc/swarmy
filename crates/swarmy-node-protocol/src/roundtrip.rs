@@ -119,10 +119,16 @@ fn volume_and_credential_wire_types_round_trip() {
     let (_, placement, lease, volume, head, header, _) = fixture();
     let now = jiff::Timestamp::UNIX_EPOCH;
     roundtrip(&VolumePublishRequest {
-        writer: WriterToken { volume, lease },
+        writer: WriterToken {
+            volume,
+            lease: lease.clone(),
+        },
         previous: head,
         next: ManifestId::from_ulid(id()),
         header,
+    });
+    roundtrip(&VolumeReleaseRequest {
+        writer: WriterToken { volume, lease },
     });
     roundtrip(&VolumeProtectRequest {
         hashes: vec![ContentHash::ZERO],

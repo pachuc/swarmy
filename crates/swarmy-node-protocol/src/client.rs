@@ -267,6 +267,22 @@ impl NodeClient {
         )
         .await
     }
+    /// Release a writer lease this node owns. A repeat after a commit succeeds.
+    /// # Errors
+    /// As `register`.
+    pub async fn release_volume(
+        &self,
+        request: &crate::VolumeReleaseRequest,
+        deadline: Instant,
+    ) -> Result<crate::Ack, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::VOLUME_RELEASE_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
     /// Send publish volume before the caller's deadline.
     /// # Errors
     /// As `register`.

@@ -25,13 +25,18 @@ pub enum Request {
     Create {
         spec: SandboxSpec,
         disk: BlockDevice,
+        /// Caller-acquired writer lease for the disk, owned by this node.
+        writer: swarmy_core::WriterOpening,
     },
     Exec {
         sandbox: Sandbox,
         request: ExecRequest,
     },
     Pause(Sandbox),
-    Resume(PauseHandle),
+    Resume {
+        handle: PauseHandle,
+        writer: swarmy_core::WriterOpening,
+    },
     Destroy(Sandbox),
     Checkpoint(Sandbox),
     Capabilities,

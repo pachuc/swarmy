@@ -8,8 +8,8 @@ use std::{
     time::Duration,
 };
 use swarmy_core::{
-    AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
-    SandboxSpec, VolumeId, ignore_best_effort,
+    AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, LeaseOwnerId, ManifestId, NodeId,
+    Sandbox, SandboxSpec, VolumeId, WriterOpening, ignore_best_effort,
 };
 use swarmy_store::{Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
@@ -29,6 +29,7 @@ struct Node {
     child: Option<Child>,
     settings: swarmy_config::Settings,
     id: NodeId,
+    store: Store,
     api: swarmy_node_api::test_support::TestApi,
 }
 
@@ -70,8 +71,17 @@ impl Node {
             child: None,
             settings,
             id,
+            store: store.clone(),
             api,
         }
+    }
+
+    /// Caller-acquired writer for the node's control socket.
+    async fn writer(&self, volume: VolumeId) -> WriterOpening {
+        self.store
+            .open_writer_lease(volume, LeaseOwnerId::from(self.id), Duration::from_secs(60))
+            .await
+            .unwrap()
     }
 
     fn pause_api(&mut self) {
@@ -153,6 +163,7 @@ impl Node {
                     requirements,
                 },
                 disk: BlockDevice { volume_id },
+                writer: self.writer(volume_id).await,
             })
             .await
         {
@@ -479,6 +490,7 @@ async fn scratch_mounts(
         .request(Request::Create {
             spec,
             disk: BlockDevice { volume_id: volume },
+            writer: node.writer(volume).await,
         })
         .await
     {
@@ -641,6 +653,7 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
                     requirements: swarmy_core::SandboxRequirements::default(),
                 },
                 disk: BlockDevice { volume_id: volume },
+                writer: node.writer(volume).await,
             })
             .await
         {
@@ -723,6 +736,7 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
             disk: BlockDevice {
                 volume_id: third_volume,
             },
+            writer: node.writer(third_volume).await,
         })
         .await
     {
@@ -846,6 +860,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
                 requirements: swarmy_core::SandboxRequirements::default(),
             },
             disk: BlockDevice { volume_id: missing },
+            writer: node.writer(volume).await,
         })
         .await,
         Response::Error(_)
@@ -1061,7 +1076,13 @@ async fn pause_resume_timeout(node: &Node, sandbox: Sandbox) {
         Response::Paused(handle) => handle,
         response => panic!("pause: {response:?}"),
     };
-    let sandbox = match node.request(Request::Resume(pause)).await {
+    let sandbox = match node
+        .request(Request::Resume {
+            writer: node.writer(pause.disk.volume_id).await,
+            handle: pause,
+        })
+        .await
+    {
         Response::Sandbox(sandbox) => sandbox,
         response => panic!("resume: {response:?}"),
     };

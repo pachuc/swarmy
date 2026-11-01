@@ -331,7 +331,7 @@ impl Hosting {
         };
         let booting = Instant::now();
         self.runtime
-            .create_with(
+            .create(
                 opening.spec.clone(),
                 BlockDevice {
                     volume_id: opening.volume,

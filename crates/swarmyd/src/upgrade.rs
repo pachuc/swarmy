@@ -3,7 +3,8 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
-use swarmy_core::{AgentId, ExecOutput, ExecRequest, NodeId, Sandbox};
+use swarmy_core::{AgentId, ExecOutput, ExecRequest, Sandbox};
+use swarmy_node_protocol::{NodeClient, PlacementOccupancy};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -110,32 +111,26 @@ pub(crate) async fn run(
     loaded: &swarmy_config::Loaded,
     warn: impl Fn(&str),
 ) -> Result<Vec<String>> {
-    let node: NodeId = loaded.node_id()?;
-    let opened = swarmy_store::Store::open_store(&loaded.settings).await?;
-    let store = opened.store;
+    let settings = &loaded.settings;
+    let client = NodeClient::from_token_file(&settings.node.api_url, &settings.node.token_file)?;
     let socket = loaded.root.join(".swarmy/node/control.sock");
-    let mut after = None;
+    busy_placements(&client, &socket, warn).await
+}
+
+async fn busy_placements(
+    client: &NodeClient,
+    socket: &Path,
+    warn: impl Fn(&str),
+) -> Result<Vec<String>> {
+    let answer = client.placements().await?;
     let mut busy = Vec::new();
-    loop {
-        let page = store
-            .list_by_node(node, after, swarmy_store::MAX_SCAN_LIMIT)
-            .await?;
-        if page.is_empty() {
-            break;
-        }
-        after = page.last().map(|placement| placement.agent_id);
-        for placement in page {
-            let occupied = store
-                .agent_call_status(placement.agent_id)
-                .await?
-                .is_some_and(|status| {
-                    status.holder_session_id.is_some() || status.queued_calls > 0
-                });
-            let running = occupied
-                || placement_busy(&socket, placement.agent_id, placement.epoch, &warn).await;
-            if running {
-                busy.push(placement.agent_id.to_string());
-            }
+    for PlacementOccupancy {
+        placement,
+        occupied,
+    } in answer.placements
+    {
+        if occupied || placement_busy(socket, placement.agent_id, placement.epoch, &warn).await {
+            busy.push(placement.agent_id.to_string());
         }
     }
     Ok(busy)
@@ -146,6 +141,7 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -187,6 +183,7 @@ mod response_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -281,5 +278,90 @@ mod response_tests {
             .unwrap()
         );
         server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::sync::Arc;
+    use swarmy_core::{AgentCallStatus, SessionId};
+    use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
+    use swarmy_store::blob::MemoryBlobStore;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn drain_counts_occupied_and_listed_placements() {
+        let Some(stack) = swarmy_testkit::Stack::load("na10-drain") else {
+            return;
+        };
+        let (store, mut guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let node = swarmy_node_api::test_support::node(&store, 2).await.node_id;
+        let (_, first) = swarmy_node_api::test_support::hosted_session(&store).await;
+        let (_, second) = swarmy_node_api::test_support::hosted_session(&store).await;
+        let expires = store.now().checked_add(Duration::from_secs(60)).unwrap();
+        let occupied = store.place(first, node, expires).await.unwrap();
+        store.place(second, node, expires).await.unwrap();
+        store.claim_placement(&occupied).await.unwrap();
+        store
+            .put_agent_call_status(&AgentCallStatus {
+                agent_id: first,
+                node_id: node,
+                epoch: occupied.epoch,
+                holder_session_id: Some(SessionId::from_ulid(ulid::Ulid::generate())),
+                queued_calls: 0,
+                observed_at: store.now(),
+                expires_at: expires,
+            })
+            .await
+            .unwrap();
+        let bus = swarmy_bus::Bus::connect(
+            &stack.nats_url,
+            swarmy_bus::Config {
+                prefix: Some(swarmy_bus::SubjectToken::new(&stack.prefix).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        bus.setup(&[]).await.unwrap();
+        let api = TestApi::start(router(NodeApiState::new(
+            store.clone(),
+            bus,
+            NodeApiPolicy {
+                placement_lease: Duration::from_secs(60),
+                snapshot_retention: std::num::NonZeroUsize::new(10).unwrap(),
+                resend_interval: Duration::from_secs(5),
+            },
+        )))
+        .await;
+        let token = store.issue_node_credential(node).await.unwrap();
+        let client = NodeClient::new(api.url(), &token).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("node.sock");
+        let mut busy = busy_placements(&client, &socket, |_| {}).await.unwrap();
+        busy.sort();
+        let mut expected = vec![first.to_string(), second.to_string()];
+        expected.sort();
+        assert_eq!(busy, expected);
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (_read, mut write) = stream.into_split();
+            let mut frame = serde_json::to_vec(&crate::Response::Error(
+                "sandbox is missing or already exists".into(),
+            ))
+            .unwrap();
+            frame.push(b'\n');
+            write.write_all(&frame).await.unwrap();
+        });
+        assert_eq!(
+            busy_placements(&client, &socket, |_| {}).await.unwrap(),
+            vec![first.to_string()]
+        );
+        server.await.unwrap();
+        guard.cleanup().await;
     }
 }

@@ -55,13 +55,7 @@ impl VolumeMetadata for Store {
         Ok(Store::release_writer_lease(self, volume, lease).await?)
     }
 }
-/// Writer lease and the manifest head it starts from.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WriterOpening {
-    pub lease: Lease,
-    pub head: ManifestId,
-    pub header: ManifestHeader,
-}
+pub use swarmy_core::WriterOpening;
 impl Store {
     /// Acquire a writer from the store clock and read its head manifest.
     /// # Errors

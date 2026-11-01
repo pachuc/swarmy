@@ -66,8 +66,7 @@ impl Credentials {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use swarmy_core::VolumeId;
-    use swarmy_volume::{MetadataError, WriterGrant};
+    use swarmy_volume::MetadataError;
     use tokio::net::UnixStream;
 
     struct FakeMetadata {
@@ -76,9 +75,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SandboxMetadata for FakeMetadata {
-        async fn open_writer(&self, _: VolumeId) -> Result<WriterGrant, MetadataError> {
-            Err(MetadataError::VolumeMissing)
-        }
         async fn github_token(&self, _: AgentId) -> Result<Option<String>, MetadataError> {
             match &self.token {
                 Ok(token) => Ok(token.clone()),

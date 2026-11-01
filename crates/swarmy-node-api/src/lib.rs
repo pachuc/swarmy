@@ -10,7 +10,7 @@ use swarmy_node_protocol::{
     GITHUB_TOKEN_PATH, HOSTING_BOOT_SET_PATH, HOSTING_CLOSE_PATH, HOSTING_OPEN_PATH,
     HOSTING_READY_PATH, LeaseLengths, PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH,
     TOOL_CLAIM_LEASE, TOOL_CLAIM_PATH, TOOL_COMPLETE_PATH, TOOL_ROUTE_PATH, VOLUME_PROTECT_PATH,
-    VOLUME_PUBLISH_PATH, WRITER_LEASE,
+    VOLUME_PUBLISH_PATH, VOLUME_RELEASE_PATH, WRITER_LEASE,
 };
 use swarmy_store::Store;
 mod auth;
@@ -96,6 +96,7 @@ pub fn router(state: NodeApiState) -> Router {
         .route(HOSTING_BOOT_SET_PATH, post(hosting::boot_set))
         .route(HOSTING_CLOSE_PATH, post(hosting::close))
         .route(VOLUME_PUBLISH_PATH, post(volumes::publish))
+        .route(VOLUME_RELEASE_PATH, post(volumes::release))
         .route(VOLUME_PROTECT_PATH, post(volumes::protect))
         .route(GITHUB_TOKEN_PATH, post(credentials::github))
         .route(REGISTER_PATH, post(register::handle))
