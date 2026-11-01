@@ -1361,3 +1361,111 @@ mod tests {
         );
     }
 }
+#[cfg(test)]
+mod scratch_inventory_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::num::NonZeroUsize;
+    use swarmy_core::{ContentHash, Lease, ManifestHeader, ManifestId, NodeId, VolumeId};
+    use swarmy_volume::{MetadataError, VolumeMetadata, WriterGrant};
+
+    struct Metadata;
+    #[async_trait::async_trait]
+    impl SandboxMetadata for Metadata {
+        async fn open_writer(
+            &self,
+            _: VolumeId,
+        ) -> std::result::Result<WriterGrant, MetadataError> {
+            Err(MetadataError::VolumeMissing)
+        }
+        async fn github_token(
+            &self,
+            _: AgentId,
+        ) -> std::result::Result<Option<String>, MetadataError> {
+            Ok(None)
+        }
+    }
+    #[async_trait::async_trait]
+    impl VolumeMetadata for Metadata {
+        async fn publish(
+            &self,
+            _: VolumeId,
+            _: &Lease,
+            _: ManifestId,
+            _: ManifestId,
+            _: &ManifestHeader,
+            _: NonZeroUsize,
+        ) -> std::result::Result<(), MetadataError> {
+            Err(MetadataError::VolumeMissing)
+        }
+        async fn protect_reused_chunks(
+            &self,
+            _: &[ContentHash],
+        ) -> std::result::Result<Vec<ContentHash>, MetadataError> {
+            Ok(Vec::new())
+        }
+        async fn release_writer_lease(
+            &self,
+            _: VolumeId,
+            _: &Lease,
+        ) -> std::result::Result<(), MetadataError> {
+            Ok(())
+        }
+    }
+    async fn fixture() -> (tempfile::TempDir, RuncRuntime) {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = RuncRuntime::open_with(
+            root.path().join("runc"),
+            ServerConfig {
+                directory: root.path().join("volumes"),
+                node: NodeId::from_ulid(ulid::Ulid::generate()),
+                metadata: Arc::new(Metadata),
+                objects: Arc::new(object_store::memory::InMemory::new()),
+            },
+            Arc::new(Metadata),
+            RuntimeOptions::default(),
+        )
+        .await
+        .unwrap();
+        (root, runtime)
+    }
+    #[tokio::test]
+    async fn scratch_inventory_flags_idle_and_skips_foreign_names() {
+        let (_root, runtime) = fixture().await;
+        let a = AgentId::from_ulid(ulid::Ulid::generate());
+        let b = AgentId::from_ulid(ulid::Ulid::generate());
+        for (id, old) in [(a, false), (b, true)] {
+            let path = runtime.scratch_root.join(id.to_string());
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("data"), b"hello").unwrap();
+            let marker = File::create(path.join(".hosted")).unwrap();
+            if old {
+                marker
+                    .set_modified(SystemTime::now() - Duration::from_secs(8 * 86_400))
+                    .unwrap();
+            }
+        }
+        std::fs::create_dir(runtime.scratch_root.join("not-an-id")).unwrap();
+        let inventory = runtime.scratch_inventory().await.unwrap();
+        assert_eq!(inventory.len(), 2);
+        let usage_a = inventory.iter().find(|u| u.agent == a).unwrap();
+        let usage_b = inventory.iter().find(|u| u.agent == b).unwrap();
+        assert!(!usage_a.hosted && !usage_a.idle && usage_a.bytes >= 5);
+        assert!(usage_b.idle && !usage_b.hosted && usage_b.bytes >= 5);
+    }
+    #[tokio::test]
+    async fn apply_scratch_evicts_listed_and_reports_once() {
+        let (_root, runtime) = fixture().await;
+        let a = AgentId::from_ulid(ulid::Ulid::generate());
+        let b = AgentId::from_ulid(ulid::Ulid::generate());
+        for id in [a, b] {
+            std::fs::create_dir(runtime.scratch_root.join(id.to_string())).unwrap();
+        }
+        let inventory = runtime.scratch_inventory().await.unwrap();
+        runtime.apply_scratch(&inventory, &[b]).await.unwrap();
+        assert!(runtime.scratch_root.join(a.to_string()).exists());
+        assert!(!runtime.scratch_root.join(b.to_string()).exists());
+        assert_eq!(runtime.take_evicted(), vec![b]);
+        assert!(runtime.take_evicted().is_empty());
+    }
+}

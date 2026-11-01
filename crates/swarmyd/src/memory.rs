@@ -33,6 +33,22 @@ pub(crate) fn spawn(
     })
 }
 
+pub(crate) fn placement_matches(
+    keeper: &Keeper,
+    node: NodeId,
+    agent: AgentId,
+    epoch: u64,
+) -> Result<()> {
+    let placement = keeper
+        .placement(agent)
+        .context("computer is not placed on this node")?;
+    ensure!(
+        placement.node_id == node && placement.epoch == epoch,
+        "memory placement expired or changed"
+    );
+    Ok(())
+}
+
 struct Memory {
     keeper: Keeper,
     runtime: Arc<RuncRuntime>,
@@ -51,15 +67,7 @@ impl Memory {
     }
 
     fn check(&self, request: &MemoryRequest) -> Result<()> {
-        let placement = self
-            .keeper
-            .placement(request.agent_id)
-            .context("computer is not placed on this node")?;
-        ensure!(
-            placement.node_id == self.node && placement.epoch == request.epoch,
-            "memory placement expired or changed"
-        );
-        Ok(())
+        placement_matches(&self.keeper, self.node, request.agent_id, request.epoch)
     }
 
     async fn instructions(&self, request: MemoryRequest) -> Result<String> {

@@ -687,6 +687,164 @@ mod tests {
             scratch: vec![],
         }
     }
+    fn scratch(agent: AgentId) -> ScratchEntry {
+        ScratchEntry {
+            agent,
+            bytes: 7,
+            hosted: false,
+            idle: false,
+        }
+    }
+    fn outage() -> ClientError {
+        ClientError::Deadline {
+            path: "sync",
+            attempts: 1,
+            last: "outage".into(),
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn scratch_rides_the_next_sync() {
+        let (keeper, script) = fixture();
+        let a = placement(jiff::Timestamp::now()).agent_id;
+        let b = placement(jiff::Timestamp::now()).agent_id;
+        let waiting = tokio::spawn({
+            let keeper = keeper.clone();
+            async move { keeper.scratch_verdicts(vec![scratch(a), scratch(b)]).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        let expected = vec![
+            ScratchVerdict::Keep,
+            ScratchVerdict::Evict(swarmy_node_protocol::EvictReason::Idle),
+        ];
+        let mut response = answer(jiff::Timestamp::now(), vec![]);
+        response.scratch = expected.clone();
+        script.answers.lock().unwrap().push_back(Ok(response));
+        keeper.sync_once().await.unwrap();
+        assert_eq!(
+            script.requests.lock().unwrap()[0].scratch,
+            vec![scratch(a), scratch(b)]
+        );
+        assert_eq!(waiting.await.unwrap().unwrap(), expected);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn failed_sync_skips_scratch_and_keeps_reports() {
+        let (keeper, script) = fixture();
+        let a = placement(jiff::Timestamp::now()).agent_id;
+        let c = placement(jiff::Timestamp::now()).agent_id;
+        keeper.report_evicted(vec![c]);
+        let waiting = tokio::spawn({
+            let keeper = keeper.clone();
+            async move { keeper.scratch_verdicts(vec![scratch(a)]).await }
+        });
+        tokio::task::yield_now().await;
+        script.answers.lock().unwrap().push_back(Err(outage()));
+        assert!(keeper.sync_once().await.is_err());
+        assert!(waiting.await.unwrap().is_err());
+        for _ in 0..2 {
+            script
+                .answers
+                .lock()
+                .unwrap()
+                .push_back(Ok(answer(jiff::Timestamp::now(), vec![])));
+            keeper.sync_once().await.unwrap();
+        }
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(requests[0].scratch, vec![scratch(a)]);
+        assert_eq!(requests[1].scratch_evicted, vec![c]);
+        assert!(requests[1].scratch.is_empty());
+        assert!(requests[2].scratch_evicted.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn metric_queue_is_bounded_and_survives_a_failed_sync() {
+        let (keeper, script) = fixture();
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        for _ in 0..=MAX_QUEUED_METRICS {
+            keeper.queue_metric(
+                session,
+                MessageId::from_ulid(ulid::Ulid::generate()),
+                NodeMetric::Computer(Default::default()),
+            );
+        }
+        script.answers.lock().unwrap().push_back(Err(outage()));
+        assert!(keeper.sync_once().await.is_err());
+        for _ in 0..2 {
+            script
+                .answers
+                .lock()
+                .unwrap()
+                .push_back(Ok(answer(jiff::Timestamp::now(), vec![])));
+            keeper.sync_once().await.unwrap();
+        }
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(requests[0].metrics.len(), MAX_QUEUED_METRICS);
+        assert_eq!(requests[1].metrics, requests[0].metrics);
+        assert!(requests[2].metrics.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn memory_check_follows_the_keeper() {
+        let (keeper, script) = fixture();
+        let now = jiff::Timestamp::now();
+        let mut record = placement(now);
+        record.epoch = 4;
+        let _hold = keeper.hold_placement(
+            record.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        assert!(
+            crate::memory::placement_matches(&keeper, record.node_id, record.agent_id, 4).is_ok()
+        );
+        assert!(
+            crate::memory::placement_matches(&keeper, record.node_id, record.agent_id, 3).is_err()
+        );
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![Renewal::Lost(NodeRefusal::NotYours)])));
+        keeper.sync_once().await.unwrap();
+        assert!(
+            crate::memory::placement_matches(&keeper, record.node_id, record.agent_id, 4).is_err()
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn placement_lookup_sees_only_live_holds() {
+        let (keeper, script) = fixture();
+        let now = jiff::Timestamp::now();
+        let record = placement(now);
+        let hold = keeper.hold_placement(
+            record.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        assert_eq!(keeper.placement(record.agent_id), Some(record.clone()));
+        tokio::time::advance(Duration::from_secs(28)).await;
+        assert!(keeper.placement(record.agent_id).is_none());
+        drop(hold);
+        let record = placement(now);
+        let _hold = keeper.hold_placement(
+            record.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![Renewal::Lost(NodeRefusal::NotYours)])));
+        keeper.sync_once().await.unwrap();
+        assert!(keeper.placement(record.agent_id).is_none());
+    }
     #[tokio::test(start_paused = true)]
     async fn deadline_comes_from_server_time_only() {
         let server_now = "2001-01-01T00:00:00Z".parse().unwrap();
