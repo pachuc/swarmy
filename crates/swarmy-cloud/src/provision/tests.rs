@@ -974,10 +974,12 @@ async fn node_config_keeps_fake_call_log_relative_to_the_checkout() {
     );
 }
 
+type UpgradeRecord = (String, bool, bool, Duration, Option<String>);
+
 #[derive(Default)]
 struct FakeUpgradeHost {
     events: Mutex<Vec<String>>,
-    upgrades: Mutex<Vec<(String, bool, bool, Duration, Option<String>)>>,
+    upgrades: Mutex<Vec<UpgradeRecord>>,
 }
 impl upgrade::UpgradeHost for FakeUpgradeHost {
     fn version(&self, node: &Machine) -> impl Future<Output = Result<String>> {
@@ -1102,18 +1104,20 @@ async fn upgrade_refuses_a_swarm_without_a_primary() {
         async fn version(&self, node: &Machine) -> Result<String> {
             self.0.version(node).await
         }
-        async fn has_service_units(&self, _node: &Machine) -> Result<bool> {
-            Ok(false)
+        fn has_service_units(&self, _node: &Machine) -> impl Future<Output = Result<bool>> {
+            std::future::ready(Ok(false))
         }
-        async fn upgrade(
+        fn upgrade(
             &self,
             _node: &Machine,
             _services_only: bool,
             _drain_timeout: Duration,
             _stack: bool,
             _primary: Option<&Machine>,
-        ) -> Result<Summary> {
-            panic!("upgrade must not start without a primary")
+        ) -> impl Future<Output = Result<Summary>> {
+            std::future::ready(Err(Error::other(
+                "upgrade must not start without a primary",
+            )))
         }
     }
     let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
