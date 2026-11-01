@@ -278,3 +278,88 @@ mod response_tests {
         server.await.unwrap();
     }
 }
+
+#[cfg(test)]
+mod drain_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::sync::Arc;
+    use swarmy_core::{AgentCallStatus, SessionId};
+    use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
+    use swarmy_store::blob::MemoryBlobStore;
+    use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn drain_counts_occupied_and_listed_placements() {
+        let Some(stack) = swarmy_testkit::Stack::load("na10-drain") else {
+            return;
+        };
+        let (store, mut guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let node = swarmy_node_api::test_support::node(&store, 2).await.node_id;
+        let (_, first) = swarmy_node_api::test_support::hosted_session(&store).await;
+        let (_, second) = swarmy_node_api::test_support::hosted_session(&store).await;
+        let expires = store.now().checked_add(Duration::from_secs(60)).unwrap();
+        let occupied = store.place(first, node, expires).await.unwrap();
+        store.place(second, node, expires).await.unwrap();
+        store.claim_placement(&occupied).await.unwrap();
+        store
+            .put_agent_call_status(&AgentCallStatus {
+                agent_id: first,
+                node_id: node,
+                epoch: occupied.epoch,
+                holder_session_id: Some(SessionId::from_ulid(ulid::Ulid::generate())),
+                queued_calls: 0,
+                observed_at: store.now(),
+                expires_at: expires,
+            })
+            .await
+            .unwrap();
+        let bus = swarmy_bus::Bus::connect(
+            &stack.nats_url,
+            swarmy_bus::Config {
+                prefix: Some(swarmy_bus::SubjectToken::new(&stack.prefix).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        bus.setup(&[]).await.unwrap();
+        let api = TestApi::start(router(NodeApiState::new(
+            store.clone(),
+            bus,
+            NodeApiPolicy {
+                placement_lease: Duration::from_secs(60),
+                snapshot_retention: std::num::NonZeroUsize::new(10).unwrap(),
+                resend_interval: Duration::from_secs(5),
+            },
+        )))
+        .await;
+        let token = store.issue_node_credential(node).await.unwrap();
+        let client = NodeClient::new(api.url(), &token).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("node.sock");
+        let mut busy = busy_placements(&client, &socket, |_| {}).await.unwrap();
+        busy.sort();
+        let mut expected = vec![first.to_string(), second.to_string()];
+        expected.sort();
+        assert_eq!(busy, expected);
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (_read, mut write) = stream.into_split();
+            use tokio::io::AsyncWriteExt;
+            let mut frame = serde_json::to_vec(&crate::Response::Error(
+                "sandbox is missing or already exists".into(),
+            ))
+            .unwrap();
+            frame.push(b'\n');
+            write.write_all(&frame).await.unwrap();
+        });
+        assert_eq!(
+            busy_placements(&client, &socket, |_| {}).await.unwrap(),
+            vec![first.to_string()]
+        );
+        server.await.unwrap();
+        guard.cleanup().await;
+    }
+}

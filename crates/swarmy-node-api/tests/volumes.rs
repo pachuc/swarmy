@@ -99,9 +99,22 @@ async fn release_frees_the_writer_for_the_next_owner() {
             .writer_lease
             .is_none()
     );
-    let other = swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate());
+    f.store.release(&hosted.placement).await.unwrap();
+    let next = support::node(&f.store, 1).await;
     f.store
-        .open_writer_lease(hosted.volume, other, Duration::from_secs(60))
+        .place(
+            hosted.placement.agent_id,
+            next.node_id,
+            f.store.now().checked_add(Duration::from_secs(60)).unwrap(),
+        )
+        .await
+        .unwrap();
+    f.store
+        .open_writer_lease(
+            hosted.volume,
+            swarmy_core::LeaseOwnerId::from(next.node_id),
+            Duration::from_secs(60),
+        )
         .await
         .unwrap();
 }

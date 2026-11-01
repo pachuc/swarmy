@@ -269,5 +269,24 @@ async fn a_node_cannot_release_another_nodes_writer() {
             .writer_lease,
         Some(b.lease)
     );
-    client_b.release_volume(&request, deadline()).await.unwrap();
+    let current = f
+        .store
+        .get_volume(b.volume)
+        .await
+        .unwrap()
+        .unwrap()
+        .head_manifest;
+    let header = f.store.get_manifest(current).await.unwrap().unwrap();
+    client_b
+        .publish_volume(
+            &VolumePublishRequest {
+                writer: request.writer,
+                previous: current,
+                next: swarmy_core::ManifestId::from_ulid(Ulid::generate()),
+                header,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
 }
