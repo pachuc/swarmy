@@ -268,20 +268,9 @@ impl Fixture {
                 .checked_sub(Duration::from_secs(60))
                 .context("node liveness window")?;
             self.node_ready(since).await?;
-            if config.prime_boot_set {
-                self.prime_boot_set(config).await?;
-            }
         }
         self.environment = environment;
-        if config.scenario == Some(Scenario::Desktop) {
-            Ok(())
-        } else {
-            self.create_sessions(
-                config.sessions,
-                config.scenario == Some(Scenario::Persistent),
-            )
-            .await
-        }
+        Ok(())
     }
 
     fn service_environment(&self, config: &Config) -> Result<Vec<(OsString, OsString)>> {
@@ -500,13 +489,16 @@ impl Fixture {
         })
         .await
         .context("boot set priming timed out")??;
-        let restarted = Timestamp::now();
         let node = self
             .processes
             .iter_mut()
             .find(|p| p.kind == Kind::Node)
             .context("priming requires a sandbox node")?;
         node.stop().await?;
+        // The stopping node keeps syncing until it exits, so only a heartbeat
+        // after that shows the new process registered. A session placed on the
+        // node before then would be refused as a stopped epoch by the new process.
+        let restarted = Timestamp::now();
         let cache = self.files.path().join(".swarmy/volumes/cache");
         if let Err(error) = std::fs::remove_dir_all(cache)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -515,6 +507,9 @@ impl Fixture {
         }
         node.start_stopped()?;
         self.node_ready(restarted).await?;
+        // The priming session is idle, so its provider calls are all logged;
+        // drop them so the call count covers only the measured sessions.
+        std::fs::write(self.files.path().join("calls"), "")?;
         tracing::info!(%key, "boot set primed");
         Ok(())
     }
@@ -673,6 +668,22 @@ async fn exercise_suite(
     timeout(Duration::from_secs(60), fixture.start(config, binaries))
         .await
         .context("session setup timed out")??;
+    if config.prime_boot_set {
+        // Priming runs a whole cold start, which outlasts the setup budget at
+        // high round trips; each of its steps has its own deadline.
+        fixture.prime_boot_set(config).await?;
+    }
+    if config.scenario != Some(Scenario::Desktop) {
+        timeout(
+            Duration::from_secs(60),
+            fixture.create_sessions(
+                config.sessions,
+                config.scenario == Some(Scenario::Persistent),
+            ),
+        )
+        .await
+        .context("session setup timed out")??;
+    }
     match config.scenario {
         Some(Scenario::Desktop) => {
             desktop::exercise(fixture, config.desktop_output.as_deref()).await?;

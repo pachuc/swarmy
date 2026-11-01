@@ -137,7 +137,7 @@ for rtt in ${LATENCY_RTTS:-175 400}; do
   bash "$here/nbd-orphans.sh"
   full=~/suite-logs/${branch##*/}-latency-$rtt.log
   if in_primary ./target/debug/swarmy-chaos --no-start-stack --bin-dir target/debug \
-      --image base-ubuntu:dev --sessions 1 --steps 2 --kills 0 --gateways 1 \
+      --image base-ubuntu:dev --sessions 1 --steps 3 --kills 0 --gateways 1 \
       --session-timeout-secs 600 --prime-boot-set --node-netns "$node_ns" --node-api-host "$primary_ip" \
       "${gates[@]}" --max-node-request-ms "$((rtt + 150))" > "$full" 2>&1; then
     echo "LATENCY_RTT=$rtt ok"
