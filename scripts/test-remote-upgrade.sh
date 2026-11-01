@@ -74,7 +74,7 @@ mkdir -p "$root/etc/systemd/system" "$root/etc/swarmy" "$root/usr/local/bin"
 export SWARMY_SYSTEMD_DIR=$root/etc/systemd/system SWARMY_ETC_DIR=$root/etc/swarmy
 sudo() { [[ $1 == -n ]] && shift
     case $1 in
-      rm) command rm -f "$root${@: -1}" ;;
+      rm) command rm -f "$root${*: -1}" ;;
       systemctl) printf '%s\n' "$*" >> "$root/systemctl.log" ;;
       install) printf '%s\n' "${@: -1}" >> "$root/install.log"; command "$@" ;;
       *) command "$@" ;;
