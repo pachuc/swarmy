@@ -6,6 +6,7 @@ use std::{
 };
 use swarmy_core::{
     AgentId, Lease, LeaseOwnerId, MessageId, PlacedToolClaim, PlacementRecord, SessionId, VolumeId,
+    ignore_best_effort,
 };
 use swarmy_node_protocol::{
     ClientError, HostedPlacement, LeaseLengths, MetricBatch, NodeAdvert, NodeMetric, Renewal,
@@ -188,6 +189,8 @@ struct Tokens {
     writers: BTreeMap<VolumeId, WriterEntry>,
 }
 const MAX_QUEUED_METRICS: usize = 1024;
+/// How long the last sync at shutdown may take, retries included.
+pub(crate) const FINAL_SYNC_BUDGET: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub(crate) struct ScratchSkipped;
@@ -360,6 +363,19 @@ impl Keeper {
             patches: vec![metric],
         });
     }
+    /// Drain the queued scratch removals and metric patches for one sync.
+    fn take_reports(&self) -> (Vec<AgentId>, Vec<MetricBatch>) {
+        let evicted =
+            std::mem::take(&mut *self.inner.evicted.lock().expect("eviction lock poisoned"));
+        let metrics = self
+            .inner
+            .metrics
+            .lock()
+            .expect("metric lock poisoned")
+            .drain(..)
+            .collect();
+        (evicted, metrics)
+    }
     pub(crate) fn writer_lease(&self, volume: VolumeId) -> Option<Lease> {
         self.inner
             .tokens
@@ -422,6 +438,7 @@ impl Keeper {
             .lock()
             .expect("scratch lock poisoned")
             .take();
+        let (scratch_evicted, metrics) = self.take_reports();
         let request = SyncRequest {
             node: self.inner.advert.clone(),
             placements: tokens
@@ -448,16 +465,8 @@ impl Keeper {
             scratch: scratch
                 .as_ref()
                 .map_or_else(Vec::new, |(entries, _)| entries.clone()),
-            scratch_evicted: std::mem::take(
-                &mut *self.inner.evicted.lock().expect("eviction lock poisoned"),
-            ),
-            metrics: self
-                .inner
-                .metrics
-                .lock()
-                .expect("metric lock poisoned")
-                .drain(..)
-                .collect(),
+            scratch_evicted,
+            metrics,
         };
         (request, deadline, scratch.map(|(_, sender)| sender))
     }
@@ -619,12 +628,49 @@ impl Keeper {
             }
         }
     }
+    /// Send the queued metric patches and scratch removals once more when the
+    /// node stops. Leases are not renewed: hosting and the runtime have released
+    /// what they could, and renewing a leftover lease would only delay its takeover.
+    /// Sends nothing when both queues are empty.
+    /// # Errors
+    /// The transport error; the drained reports are dropped with the process.
+    pub(crate) async fn final_sync(&self, budget: Duration) -> Result<(), ClientError> {
+        let (scratch_evicted, metrics) = self.take_reports();
+        if scratch_evicted.is_empty() && metrics.is_empty() {
+            return Ok(());
+        }
+        let (evictions, patches) = (scratch_evicted.len(), metrics.len());
+        let request = SyncRequest {
+            node: self.inner.advert.clone(),
+            placements: Vec::new(),
+            claims: Vec::new(),
+            writers: Vec::new(),
+            scratch: Vec::new(),
+            scratch_evicted,
+            metrics,
+        };
+        match self
+            .inner
+            .transport
+            .sync(&request, Instant::now() + budget)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), evictions, patches, "final node sync failed; queued reports dropped");
+                Err(error)
+            }
+        }
+    }
     pub(crate) async fn run(&self, mut stop: watch::Receiver<bool>) {
         let mut interval = tokio::time::interval(self.inner.period);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! { _ = interval.tick() => { if let Err(error) = self.sync_once().await { tracing::warn!(error = %swarmy_core::error_chain(&error), "node sync failed; leases keep their local deadlines"); } }, changed = stop.changed() => { if changed.is_err() || *stop.borrow() { break; } } }
         }
+        // role.rs stops the keeper after hosting and the runtime, so this carries
+        // everything they queued on the way out.
+        ignore_best_effort(self.final_sync(FINAL_SYNC_BUDGET).await, "final node sync");
     }
 }
 
@@ -640,6 +686,7 @@ mod tests {
     use swarmy_node_protocol::{FenceKind, NodeRefusal, PlacementRenewal};
     struct Script {
         requests: Mutex<Vec<SyncRequest>>,
+        deadlines: Mutex<Vec<Instant>>,
         answers: Mutex<VecDeque<Result<SyncResponse, ClientError>>>,
     }
     #[async_trait::async_trait]
@@ -647,9 +694,10 @@ mod tests {
         async fn sync(
             &self,
             request: &SyncRequest,
-            _deadline: Instant,
+            deadline: Instant,
         ) -> Result<SyncResponse, ClientError> {
             self.requests.lock().unwrap().push(request.clone());
+            self.deadlines.lock().unwrap().push(deadline);
             self.answers.lock().unwrap().pop_front().unwrap()
         }
     }
@@ -664,6 +712,7 @@ mod tests {
     fn fixture() -> (Keeper, Arc<Script>) {
         let script = Arc::new(Script {
             requests: Mutex::new(Vec::new()),
+            deadlines: Mutex::new(Vec::new()),
             answers: Mutex::new(VecDeque::new()),
         });
         let advert = NodeAdvert {
@@ -795,6 +844,82 @@ mod tests {
         assert_eq!(requests[0].metrics.len(), MAX_QUEUED_METRICS);
         assert_eq!(requests[1].metrics, requests[0].metrics);
         assert!(requests[2].metrics.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn stop_flushes_queued_reports_once_without_leases() {
+        let (keeper, script) = fixture();
+        let now = jiff::Timestamp::now();
+        let record = placement(now);
+        let _hold = keeper.hold_placement(
+            record,
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![Renewal::Pending("x".into())])));
+        let (stop, signal) = watch::channel(false);
+        let running = tokio::spawn({
+            let keeper = keeper.clone();
+            async move { keeper.run(signal).await }
+        });
+        while script.requests.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        keeper.queue_metric(
+            session,
+            MessageId::from_ulid(ulid::Ulid::generate()),
+            NodeMetric::Computer(swarmy_core::ComputerMetric::default()),
+        );
+        let evicted = placement(now).agent_id;
+        keeper.report_evicted(vec![evicted]);
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![])));
+        let stopped_at = Instant::now();
+        stop.send_replace(true);
+        running.await.unwrap();
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].placements.len(), 1);
+        let final_request = &requests[1];
+        assert!(final_request.placements.is_empty());
+        assert!(final_request.claims.is_empty());
+        assert!(final_request.writers.is_empty());
+        assert!(final_request.scratch.is_empty());
+        assert_eq!(final_request.scratch_evicted, vec![evicted]);
+        assert_eq!(final_request.metrics.len(), 1);
+        assert_eq!(
+            script.deadlines.lock().unwrap()[1],
+            stopped_at + FINAL_SYNC_BUDGET
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn final_sync_sends_nothing_when_nothing_is_queued() {
+        let (keeper, script) = fixture();
+        keeper.final_sync(FINAL_SYNC_BUDGET).await.unwrap();
+        assert!(script.requests.lock().unwrap().is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn final_sync_failure_drops_reports_and_returns_the_error() {
+        let (keeper, script) = fixture();
+        keeper.queue_metric(
+            SessionId::from_ulid(ulid::Ulid::generate()),
+            MessageId::from_ulid(ulid::Ulid::generate()),
+            NodeMetric::Computer(swarmy_core::ComputerMetric::default()),
+        );
+        script.answers.lock().unwrap().push_back(Err(outage()));
+        assert!(keeper.final_sync(FINAL_SYNC_BUDGET).await.is_err());
+        keeper.final_sync(FINAL_SYNC_BUDGET).await.unwrap();
+        assert_eq!(script.requests.lock().unwrap().len(), 1);
     }
     #[tokio::test(start_paused = true)]
     async fn memory_check_follows_the_keeper() {
