@@ -19,7 +19,8 @@ configuration at `.swarmy/config.toml`:
 
 Scripts match the client binary. Rebuild a development client after editing a
 script. Do not delete `.swarmy/` or `.dev/` when clearing unused checkout files.
-The node's binaries and scripts are
+The core release bundle carries `swarmy-node` alongside the stack binaries.
+Node-only hosts install only `swarmy-node` from it. The node's binaries and scripts are
 copied from a checkout for development builds, or fetched from the matching
 release for release builds. `SWARMY_RELEASE_BASE_URL` overrides the release
 archive source. Systemd is the Linux service manager that starts and
