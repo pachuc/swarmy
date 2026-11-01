@@ -1,4 +1,5 @@
 //! Volume metadata served by the primary node API.
+use crate::heads::Heads;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use swarmy_core::{
     AgentId, ContentHash, FenceKind, Lease, LeaseOwnerId, ManifestHeader, ManifestId, NodeId,
@@ -53,10 +54,15 @@ impl swarmy_sandbox::SandboxMetadata for NodeSandboxMetadata {
 pub(crate) struct NodeVolumeMetadata {
     client: NodeClient,
     store: Store,
+    heads: Heads,
 }
 impl NodeVolumeMetadata {
-    pub(crate) fn new(client: NodeClient, store: Store) -> Self {
-        Self { client, store }
+    pub(crate) fn new(client: NodeClient, store: Store, heads: Heads) -> Self {
+        Self {
+            client,
+            store,
+            heads,
+        }
     }
 }
 #[async_trait::async_trait]
@@ -85,6 +91,7 @@ impl VolumeMetadata for NodeVolumeMetadata {
             )
             .await
             .map_err(metadata_error)?;
+        self.heads.set(volume, next);
         Ok(())
     }
     async fn protect_reused_chunks(
@@ -133,6 +140,77 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_node_protocol::FenceKind as ProtocolFence;
+    #[tokio::test]
+    async fn publish_records_the_head_only_when_accepted() {
+        use axum::{Json, Router, response::IntoResponse, routing::post};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use swarmy_core::{ContentHash, NodeToken};
+        use swarmy_node_api::test_support::TestApi;
+        use swarmy_node_protocol::{Ack, Failure, VOLUME_PUBLISH_PATH};
+        use swarmy_store::blob::MemoryBlobStore;
+        let Some(stack) = swarmy_testkit::Stack::load("published-head") else {
+            return;
+        };
+        let (store, mut guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = count.clone();
+        let router = Router::new().route(
+            VOLUME_PUBLISH_PATH,
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Json(Ack {
+                            server_now: jiff::Timestamp::now(),
+                        })
+                        .into_response()
+                    } else {
+                        (
+                            axum::http::StatusCode::CONFLICT,
+                            Json(Failure::Refused {
+                                refusal: NodeRefusal::Fenced(ProtocolFence::VolumeLease),
+                            }),
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        let api = TestApi::start(router).await;
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        let client = NodeClient::new(api.url(), &NodeToken::new(node, [1; 32])).unwrap();
+        let heads = Heads::default();
+        let metadata = NodeVolumeMetadata::new(client, store, heads.clone());
+        let volume = VolumeId::from_ulid(ulid::Ulid::generate());
+        let previous = ManifestId::from_ulid(ulid::Ulid::generate());
+        let a = ManifestId::from_ulid(ulid::Ulid::generate());
+        let b = ManifestId::from_ulid(ulid::Ulid::generate());
+        let lease = Lease {
+            owner: LeaseOwnerId::from(node),
+            expires_at: jiff::Timestamp::now(),
+            seq: 1,
+        };
+        let header = ManifestHeader {
+            size: u64::from(swarmy_core::CHUNK_SIZE),
+            chunk_size: swarmy_core::CHUNK_SIZE,
+            root_hash: ContentHash([1; 32]),
+        };
+        let retention = NonZeroUsize::new(1).unwrap();
+        metadata
+            .publish(volume, &lease, previous, a, &header, retention)
+            .await
+            .unwrap();
+        assert_eq!(heads.get(volume), Some(a));
+        assert!(
+            metadata
+                .publish(volume, &lease, a, b, &header, retention)
+                .await
+                .is_err()
+        );
+        assert_eq!(heads.get(volume), Some(a));
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        guard.cleanup().await;
+    }
     #[test]
     fn refusals_map_to_volume_errors() {
         let cases = [

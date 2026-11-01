@@ -35,6 +35,7 @@ object_store.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 swarmy-node-api = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-testkit.workspace = true

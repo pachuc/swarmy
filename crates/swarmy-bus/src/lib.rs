@@ -418,10 +418,23 @@ impl Bus {
         &self,
         queue: &WorkQueue,
     ) -> Result<WorkMessages<T>, Error> {
+        self.consume_batched(queue, std::num::NonZeroUsize::MIN)
+            .await
+    }
+
+    /// Open a pull loop on this route's durable consumer, `batch` messages per pull.
+    /// Only a consumer that owns its queue alone should pull more than one.
+    /// # Errors
+    /// Returns setup, configuration, or pull subscription errors.
+    pub async fn consume_batched<T: DeserializeOwned>(
+        &self,
+        queue: &WorkQueue,
+        batch: std::num::NonZeroUsize,
+    ) -> Result<WorkMessages<T>, Error> {
         let consumer = self.ensure_consumer(queue).await?;
         let messages = consumer
             .stream()
-            .max_messages_per_batch(1)
+            .max_messages_per_batch(batch.get())
             .messages()
             .await
             .map_err(nats)?;

@@ -201,7 +201,7 @@ The hosting actor admits tool calls through a bounded FIFO channel per agent.
 Calls waiting for channel capacity retain FIFO admission order. A running call
 finishes or reaches its tool timeout before the next call starts; later calls
 cannot overtake an already queued session. Each call collects its own stdout
-and stderr before committing its result.
+and stderr before committing its result. The first `tool/claim` runs while the sandbox boots. The node pulls up to 16 jobs per NATS pull, claims each through the node API, then awaits `tool/complete` before acknowledging the message. `AlreadyDone` succeeds without rerunning the command. The node API publishes `ToolCompleted` and wakes the session; the completion answer's interrupt flag stops a background process after commit. Bash results use the node volume writer's last published head for `manifest_id`. Screenshots go directly to object storage, with only their key in the result.
 
 Each keeper sync sends call occupancy to the node API, which writes `swarmy_core::AgentCallStatus` in the separate store row `("agent_call_status", agent_id)`. CLI consumers can read it through `Store::agent_call_status(agent_id)`. Its fields are `agent_id`, `node_id`, `epoch`, `holder_session_id`, `queued_calls`, `observed_at`, and `expires_at`.
 The holder includes sandbox startup and call execution. The queue count excludes
@@ -224,6 +224,6 @@ live placement and epoch; memory cache keys use the content fingerprint, not
 the volume head. GitHub credentials come from the node API only for an agent
 placed live on this node. First-tool computer re-samples use a bounded 1,024
 patch keeper queue, which drops the oldest patch when full and retries after
-failed syncs; completion patches still use the store until NA8.
+failed syncs; completion metrics are recorded by the node API.
 
 On a cold start the node passes the boot set from `hosting/open` to the volume server. After the first completed tool call it records the new boot set, writes it directly to object storage and reports its key to the node API. The first boot of a new image remains slow until a set has been recorded.
