@@ -695,8 +695,26 @@ async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, b
         "create waited {:?} behind the discard",
         started.elapsed()
     );
-    // The new sandbox may reuse the freed NBD device, so the old one counts
-    // as discarded when it is free or now belongs to that sandbox.
+    discarded(node, agent, &path, &unrelated).await;
+    node.resume_api().await;
+    node.destroy(unrelated).await;
+    discarded_writer_expires(store, agent).await;
+    let next = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        "test $(cat /persistent) = durable",
+    )
+    .await;
+    completed(store, &next).await;
+    assert!(store.get_by_agent(agent).await.unwrap().unwrap().epoch > old.epoch);
+}
+
+/// The lapsed agent's computer is gone. A sandbox created meanwhile may reuse
+/// the freed NBD device, so the old device counts as discarded when it is free
+/// or now belongs to that sandbox.
+async fn discarded(node: &Node, agent: AgentId, path: &Path, unrelated: &Sandbox) {
     let reused = device(node, unrelated.agent_id) == path;
     let gone = |part: &str| {
         !node
@@ -712,16 +730,17 @@ async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, b
             (if reused {
                 gone("runc") && gone("bundles")
             } else {
-                is_absent(node, agent, &path)
+                is_absent(node, agent, path)
             })
             .then_some(())
         },
     )
     .await;
-    node.resume_api().await;
-    node.destroy(unrelated).await;
-    // The discard's release could not reach the node API, so the old writer
-    // lease runs out on its own before the next epoch can bind the disk.
+}
+
+/// The discard's release could not reach the node API, so the old writer
+/// lease runs out on its own before the next epoch can bind the disk.
+async fn discarded_writer_expires(store: &Store, agent: AgentId) {
     let volume = VolumeId::from_ulid(agent.as_ulid());
     if let Some(lease) = store
         .get_volume(volume)
@@ -742,16 +761,6 @@ async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, b
         )
         .await;
     }
-    let next = dispatch(
-        store,
-        bus,
-        node.id,
-        agent,
-        "test $(cat /persistent) = durable",
-    )
-    .await;
-    completed(store, &next).await;
-    assert!(store.get_by_agent(agent).await.unwrap().unwrap().epoch > old.epoch);
 }
 
 async fn restart_waits_for_its_old_epoch(
