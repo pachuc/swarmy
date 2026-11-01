@@ -165,7 +165,14 @@ mod tests {
     #[test]
     fn free_port_is_bindable() {
         let host = std::net::Ipv4Addr::LOCALHOST.into();
-        let port = super::free_port(host).unwrap();
-        let _listener = std::net::TcpListener::bind((host, port)).unwrap();
+        // The helper deliberately releases the port; retry if another test
+        // takes it between selection and binding.
+        for _ in 0..20 {
+            let port = super::free_port(host).unwrap();
+            if let Ok(_listener) = std::net::TcpListener::bind((host, port)) {
+                return;
+            }
+        }
+        panic!("selected ports were repeatedly claimed before binding");
     }
 }
