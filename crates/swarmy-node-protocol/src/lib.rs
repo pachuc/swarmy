@@ -4,6 +4,8 @@ use std::time::Duration;
 mod client;
 mod credentials;
 mod hosting;
+mod images;
+pub use images::{ImageProbeFinishRequest, ImageProbeOpenResponse};
 mod refusal;
 #[cfg(test)]
 mod roundtrip;
@@ -62,6 +64,10 @@ pub const HOSTING_OPEN_PATH: &str = "/node/v1/hosting/open";
 pub const HOSTING_BOOT_SET_PATH: &str = "/node/v1/hosting/boot-set";
 /// Record a booted sandbox.
 pub const HOSTING_READY_PATH: &str = "/node/v1/hosting/ready";
+/// Open an image probe sandbox.
+pub const IMAGE_PROBE_OPEN_PATH: &str = "/node/v1/image/probe/open";
+/// Finish an image probe sandbox.
+pub const IMAGE_PROBE_FINISH_PATH: &str = "/node/v1/image/probe/finish";
 /// Release hosting.
 pub const HOSTING_CLOSE_PATH: &str = "/node/v1/hosting/close";
 /// Publish a volume head.

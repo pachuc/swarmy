@@ -232,6 +232,6 @@ placed live on this node. First-tool computer re-samples use a bounded 1,024
 patch keeper queue, which drops the oldest patch when full and retries after
 failed syncs and is flushed once at shutdown; completion metrics are recorded by the node API.
 
-On a cold start the node passes the boot set from `hosting/open` to the volume server. After the first completed tool call it records the new boot set, writes it directly to object storage and reports its key to the node API. The first boot of a new image remains slow until a set has been recorded.
+On a cold start the node passes the boot set from `hosting/open` to the volume server. After the first completed tool call it records the new boot set, writes it directly to object storage and reports its key to the node API. Registering an image queues a probe: one node boots it and runs `bash -c true`, then records the boot set so the first real boot prefetches. The node logs `image probe finished`.
 
 The upgrade drain helper obtains placements and occupancy through the node API, then asks the existing control socket whether each unoccupied placement still has a running process.

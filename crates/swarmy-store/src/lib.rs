@@ -21,6 +21,7 @@ pub(crate) use session::{
 };
 pub mod blob;
 mod boot_sets;
+pub use boot_sets::image_probe_volume;
 mod breakers;
 mod computers;
 pub mod credentials;

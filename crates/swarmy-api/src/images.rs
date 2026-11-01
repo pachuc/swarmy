@@ -201,6 +201,22 @@ pub(crate) async fn upload(
         )
         .await
         .map_err(storage)?;
+    let probe = swarmy_core::ImageProbe {
+        name: validated.name.clone(),
+        tag: ImageTag(validated.tag.clone()),
+        manifest: manifest_id,
+    };
+    if let Err(error) = state
+        .bus
+        .publish_work_once(
+            &swarmy_bus::WorkQueue::ImageProbes,
+            &probe,
+            &manifest_id.to_string(),
+        )
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), image = %format!("{}:{}", probe.name, probe.tag.0), "image probe not queued; the first boot records its boot set");
+    }
     let response = api::ImageUpload {
         name: validated.name.clone(),
         tag: validated.tag.clone(),

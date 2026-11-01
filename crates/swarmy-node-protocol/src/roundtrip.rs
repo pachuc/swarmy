@@ -180,3 +180,20 @@ fn tool_claim_and_completion_wire_types_round_trip() {
         interrupt_requested: true,
     });
 }
+
+#[test]
+fn image_probe_wire_roundtrip() {
+    let (_, _, lease, volume, manifest, header, spec) = fixture();
+    roundtrip(&ImageProbeOpenResponse {
+        server_now: jiff::Timestamp::UNIX_EPOCH,
+        volume,
+        writer: lease,
+        head: manifest,
+        header,
+        spec,
+    });
+    roundtrip(&ImageProbeFinishRequest {
+        manifest,
+        key: Some("bootsets/test".into()),
+    });
+}

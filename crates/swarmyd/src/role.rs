@@ -4,7 +4,7 @@ use crate::{
     heads::Heads,
     hosting,
     keeper::{Keeper, ScratchSkipped},
-    memory, service, tools, upgrade,
+    memory, probe, service, tools, upgrade,
 };
 use std::ffi::OsString;
 
@@ -84,11 +84,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         &registered.previous,
     );
     let socket = root.join("control.sock");
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
-    let listener = UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    let listener = control_socket(&socket)?;
     tracing::info!(%node, socket = %socket.display(), "node registered and ready");
     let (keeping_stop, keeping_signal) = watch::channel(false);
     let keeping = tokio::spawn({
@@ -103,12 +99,20 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     ));
     let mut clients = JoinSet::new();
     let mut memory_server = memory::spawn(bus.clone(), keeper.clone(), runtime.clone(), node);
+    let mut probe_server = probe::spawn(
+        bus.clone(),
+        client.clone(),
+        keeper.clone(),
+        runtime.clone(),
+        settings.bus.ack_wait_ms,
+    );
     let mut tool_server = tools::spawn(bus, node, &hosting, settings);
     let serving: Result<()> = async {
         loop {
             tokio::select! {
                 result = &mut memory_server => { result??; break; }
                 result = &mut tool_server => { result??; break; }
+                result = &mut probe_server => { result??; break; }
                 connection = listener.accept() => {
                     let (socket, _) = connection?;
                     let runtime = runtime.clone();
@@ -124,11 +128,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         }
         Ok(())
     }.await;
-    memory_server.abort();
-    tool_server.abort();
-    if !tool_server.is_finished() {
-        ignore_best_effort(tool_server.await, "await tool server shutdown");
-    }
+    stop_work_servers(memory_server, tool_server, probe_server).await;
     ignore_best_effort(shutdown.send(true), "signal shutdown");
     while clients.join_next().await.is_some() {}
     // The keeper stops last: a scratch round waits for its next sync, and shutdown
@@ -144,6 +144,30 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     std::fs::remove_file(socket)?;
     cleanup?;
     serving
+}
+
+/// Bind the node control socket with owner-only permissions.
+fn control_socket(socket: &std::path::Path) -> Result<UnixListener> {
+    if socket.exists() {
+        std::fs::remove_file(socket)?;
+    }
+    let listener = UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+/// Stop queue consumers before shutting down their runtime and lease keeper.
+async fn stop_work_servers(
+    memory_server: tokio::task::JoinHandle<Result<(), swarmy_bus::Error>>,
+    tool_server: tokio::task::JoinHandle<Result<()>>,
+    probe_server: tokio::task::JoinHandle<Result<()>>,
+) {
+    memory_server.abort();
+    tool_server.abort();
+    probe_server.abort();
+    if !tool_server.is_finished() {
+        ignore_best_effort(tool_server.await, "await tool server shutdown");
+    }
 }
 
 /// Sweep independently so a sync wait cannot block control-socket accepts.

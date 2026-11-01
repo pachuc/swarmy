@@ -42,8 +42,9 @@ pub use session::{
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
 
 pub use volume::{
-    BootSet, CHUNK_SIZE, ContentHash, GcRun, ImageRecord, MAX_BOOT_SET_CHUNKS, ManifestHeader,
-    VolumeRecord, WriterOpening, blob_key, boot_set_key, is_blob_key, is_boot_set_key,
+    BootSet, CHUNK_SIZE, ContentHash, GcRun, ImageProbe, ImageRecord, MAX_BOOT_SET_CHUNKS,
+    ManifestHeader, VolumeRecord, WriterOpening, blob_key, boot_set_key, is_blob_key,
+    is_boot_set_key,
 };
 
 mod node;
