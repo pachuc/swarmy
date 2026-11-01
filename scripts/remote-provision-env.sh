@@ -419,9 +419,8 @@ UNIT
 
 render_node_unit() {
     : "${unit_mode:?unit inputs not set}"
-    local stack_dependency dependency_kind=Wants mount_requirement='' node_unit
+    local stack_dependency dependency_kind=Wants mount_requirement=''
     stack_dependency=$(swarmy_mode_backing_unit "$unit_mode") || return 1
-    node_unit=$(swarmy_agent_unit) || return 1
     # Keep the node role running across tunnel reconnects; its clients reconnect too.
     if [[ $unit_mode == stack ]]; then dependency_kind=Requires; fi
     if [[ -n $unit_mount ]]; then mount_requirement="RequiresMountsFor=$unit_mount"; fi
