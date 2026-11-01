@@ -2,7 +2,6 @@
 mod support;
 use std::time::Duration;
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageProbe, ImageTag, ManifestHeader, ManifestId};
-use swarmy_node_api::router;
 use swarmy_node_protocol::{ClientError, ImageProbeFinishRequest, NodeRefusal};
 use swarmy_store::{PutImageOptions, image_probe_volume};
 use ulid::Ulid;

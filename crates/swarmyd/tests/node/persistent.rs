@@ -34,6 +34,17 @@ async fn dispatch_arguments(
     agent: AgentId,
     arguments: swarmy_core::SandboxArguments,
 ) -> ToolJob {
+    dispatch_on_image(store, bus, node, agent, arguments, "persistent:test").await
+}
+
+async fn dispatch_on_image(
+    store: &Store,
+    bus: &Bus,
+    node: NodeId,
+    agent: AgentId,
+    arguments: swarmy_core::SandboxArguments,
+    image: &str,
+) -> ToolJob {
     let session = SessionRecord {
         interrupt_requested: false,
         session_id: SessionId::from_ulid(ulid::Ulid::generate()),
@@ -56,7 +67,7 @@ async fn dispatch_arguments(
             .unwrap();
     } else {
         store
-            .create_session(&session, jiff::Timestamp::now(), "persistent:test")
+            .create_session(&session, jiff::Timestamp::now(), image)
             .await
             .unwrap();
     }
@@ -218,6 +229,7 @@ pub(super) async fn start(
 }
 
 pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
+    image_probe_records_a_boot_set_before_the_first_session(settings.clone(), store, base).await;
     Box::pin(restart_waits_for_its_old_epoch(
         settings.clone(),
         store,
@@ -245,6 +257,80 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     .await;
     boot_set_prefetch(&mut node, store, &bus, base).await;
     graceful(&mut node, store, &bus, base).await;
+}
+
+async fn image_probe_records_a_boot_set_before_the_first_session(
+    settings: swarmy_config::Settings,
+    store: &Store,
+    base: ManifestId,
+) {
+    let (mut node, bus) = start(settings, store, base, 3).await;
+    let manifest = ManifestId::from_ulid(ulid::Ulid::generate());
+    let header = store.get_manifest(base).await.unwrap().unwrap();
+    store.put_manifest(manifest, &header).await.unwrap();
+    let tag = ImageTag(format!("probe-{}", ulid::Ulid::generate()));
+    store
+        .put_image("persistent", &tag, manifest, None)
+        .await
+        .unwrap();
+    bus.setup(&[WorkQueue::ImageProbes]).await.unwrap();
+    bus.publish_work(
+        &WorkQueue::ImageProbes,
+        &swarmy_core::ImageProbe {
+            name: "persistent".into(),
+            tag: tag.clone(),
+            manifest,
+        },
+    )
+    .await
+    .unwrap();
+    let log_path = node.root.path().join("node.log");
+    swarmy_testkit::eventually(
+        "image probe did not finish",
+        Duration::from_secs(90),
+        async || {
+            let recorded = store.boot_set(manifest).await.unwrap().is_some();
+            let removed = store
+                .get_volume(swarmy_store::image_probe_volume(manifest))
+                .await
+                .unwrap()
+                .is_none();
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            (recorded && removed && log.contains("image probe finished")).then_some(())
+        },
+    )
+    .await;
+    let before = std::fs::read_to_string(&log_path).unwrap().len();
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let image = format!("persistent:{}", tag.0);
+    let job = dispatch_on_image(
+        store,
+        &bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::Bash(BashArguments {
+            command: "true".into(),
+            timeout_ms: 120_000,
+            yield_seconds: 10,
+            output_budget_bytes: 32768,
+        }),
+        &image,
+    )
+    .await;
+    completed(store, &job).await;
+    swarmy_testkit::eventually(
+        "first session did not prefetch",
+        Duration::from_secs(30),
+        async || {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            log.get(before..)
+                .is_some_and(|later| later.contains("boot set prefetched"))
+                .then_some(())
+        },
+    )
+    .await;
+    evicted(store, agent).await;
+    node.stop().await;
 }
 
 async fn boot_set_prefetch(node: &mut Node, store: &Store, bus: &Bus, base: ManifestId) {
