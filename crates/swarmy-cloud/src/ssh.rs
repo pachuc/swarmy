@@ -243,15 +243,10 @@ async fn run_output_with_stderr(
         .spawn()
         .map_err(crate::Error::ssh(action))?;
     let stderr = child.stderr.take().expect("stderr was piped");
-    let action_owned = action.to_owned();
-    let relay = tokio::spawn(async move {
+    let relay = async {
         let mut lines = tokio::io::BufReader::new(stderr).lines();
         let mut tail = VecDeque::new();
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .map_err(crate::Error::ssh(&action_owned))?
-        {
+        while let Some(line) = lines.next_line().await.map_err(crate::Error::ssh(action))? {
             cloud_err!("{line}");
             if !line.trim().is_empty() {
                 if tail.len() == STDERR_TAIL_LINES {
@@ -261,12 +256,10 @@ async fn run_output_with_stderr(
             }
         }
         Ok::<_, crate::Error>(tail)
-    });
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(crate::Error::ssh(action))?;
-    let tail = relay.await.map_err(crate::Error::ssh(action))??;
+    };
+    let (output, tail) = tokio::join!(child.wait_with_output(), relay);
+    let output = output.map_err(crate::Error::ssh(action))?;
+    let tail = tail?;
     if !output.status.success() {
         return Err(crate::Error::SshFailed {
             command: action.to_owned(),
