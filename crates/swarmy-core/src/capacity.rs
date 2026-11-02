@@ -76,7 +76,11 @@ pub fn capacity_wait_reason(requirement: GpuRequirement, shortfall: Option<Short
                 .into()
         }
     };
-    shortfall.map_or_else(|| reason.clone(), |s| format!("{reason}; {s}"))
+    if let Some(s) = shortfall {
+        format!("{reason}; {s}")
+    } else {
+        reason
+    }
 }
 
 /// The conversation notice appended when a session starts waiting for capacity.

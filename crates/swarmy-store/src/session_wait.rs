@@ -208,7 +208,7 @@ impl Store {
         .await
     }
 
-    /// Remove both wait keys without reading them; callers already hold the wait.
+    /// Remove the wait, its due index and any shortfall; callers already hold the wait.
     pub(crate) fn clear_wait(
         &self,
         trx: &foundationdb::Transaction,
