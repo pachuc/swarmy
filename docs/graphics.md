@@ -57,8 +57,8 @@ and lavapipe is the only device in a CPU sandbox. The `chromium` wrapper pins
 Chromium to software rendering only on the software display. An agent can run
 `cat /run/swarmy-display/renderer` to check the choice.
 
-The NVIDIA path has not run on a card yet. Elastic GPU end-to-end acceptance
-validates it on an L4. If Xorg keeps failing there, PID 1 keeps restarting it
+The NVIDIA path ran on an AWS g6.xlarge (one L4) in the GPU end-to-end runs
+of October and November 2026: `glxinfo -B` reported `NVIDIA L4/PCIe/SSE2`. If Xorg keeps failing there, PID 1 keeps restarting it
 and the renderer file still says `nvidia`; there is no silent fallback.
 
 ## Browser and screen tools
@@ -110,6 +110,15 @@ selector against a fake `/dev` and fake library directories. The last step of
 the desktop proof checks the renderer file, `glxinfo -B`, and
 `vulkaninfo --summary` on the software path.
 
+
+`scripts/node-suites/gpu-proof.sh --swarm NAME --provider ID --model ID --image NAME:TAG`
+runs a throwaway GPU agent on a swarm with a GPU group. It checks that the
+renderer file says `nvidia`, `glxinfo -B` does not report `llvmpipe`, and
+`nvidia-smi` names the card and shows memory in use while `glxgears` runs.
+It also checks that `screen_windows` lists the `glxgears` window and
+`screen_screenshot` returns a non-blank PNG. Evidence goes to
+`~/.local/state/swarmy/gpu-proof/AGENT/`. Inside a sandbox `nvidia-smi` usually
+lists no processes; the summary records whether it did.
 
 `python3 images/base-desktop/tests/browser-helper.py` checks the helper against
 a fake CDP endpoint without a display. `python3

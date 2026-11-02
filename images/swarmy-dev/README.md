@@ -3,7 +3,9 @@
 `swarmy image build images/swarmy-dev` builds and registers `swarmy-dev:dev`;
 pass `--tag NAME` for another tag, and `swarmy swarm create NAME --host <machine-address> --ssh-key <bootstrap-key>` followed by `swarmy swarm up NAME --image-recipe images/swarmy-dev` builds it on a node as that node's default image. The
 recipe uses the same Ubuntu Noble source and package set as `base-ubuntu`,
-plus Clang and libclang for the workspace's FoundationDB bindings. The builder runs
+plus Clang and libclang for the workspace's FoundationDB bindings,
+`openssh-client` for `ssh-keygen`, which the CLI's SSH acceptance tests use,
+and `libgl-dev`, the OpenGL development files for building GL programs. The builder runs
 `images/common/agent-setup.sh` before this image's setup script to install the
 `agent` account and GitHub credential helper. No credential is copied in.
 

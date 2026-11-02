@@ -11,6 +11,7 @@ python3 images/base-desktop/tests/browser-helper.py
 python3 -m unittest discover -s images/base-desktop/tests -p 'test_*.py'
 python3 -m unittest discover -s images/common/tests -p 'test_*.py'
 bash scripts/test-desktop-agent-check.sh
+bash scripts/test-gpu-proof.sh
 python3 crates/swarmyd/tests/files_test.py
 bash scripts/test-check-node-deps.sh
 bash scripts/test-check-openapi-compat.sh
