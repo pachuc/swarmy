@@ -39,12 +39,14 @@ const REMOVED_KEYS: &[(&str, &str, &str)] = &[(
 fn removed_keys(table: &toml::Table) -> Vec<String> {
     REMOVED_KEYS
         .iter()
-        .filter_map(|(section, key, replacement)| {
+        .filter(|(section, key, _)| {
             table
-                .get(*section)?
-                .as_table()?
-                .contains_key(*key)
-                .then(|| format!("[{section}] {key} was removed; use {replacement}"))
+                .get(*section)
+                .and_then(toml::Value::as_table)
+                .is_some_and(|entry| entry.contains_key(*key))
+        })
+        .map(|(section, key, replacement)| {
+            format!("[{section}] {key} was removed; use {replacement}")
         })
         .collect()
 }
