@@ -2274,7 +2274,7 @@ mod provisioning_command_tests {
     // `bash -s` with a stubbed systemctl: the piped env text plus the query
     // must compose and report installed control units (empty means none).
     async fn piped_query(bin: &std::path::Path) -> String {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         let mut script = super::piped_env();
         assert!(!script.contains("remote-s3-env.sh"));
         // Mirror `has_service_units`: fail loudly inside the pipe.
