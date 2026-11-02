@@ -49,10 +49,6 @@ pub enum Error {
         "swarm \"{swarm}\" has no spec and no API URL; forget it with `swarmy swarm rm {swarm}`"
     )]
     SwarmIncomplete { swarm: String },
-    #[error(
-        "swarm \"{swarm}\" serves its API over SSH; use the swarmy CLI, which opens the tunnel"
-    )]
-    NeedsTunnel { swarm: String },
     #[error("invalid API endpoint {endpoint}: {source}")]
     InvalidEndpoint {
         endpoint: String,

@@ -249,24 +249,38 @@ async fn remove(provider: String, label: String, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Shell out to the `swarmy-auth` helper so terminal OAuth flows stay out of
-/// this binary. One function builds the helper command, appends the caller's
-/// subcommand arguments, and checks its exit status.
-fn helper(auth_file: Option<PathBuf>, json: bool, argv: &[std::ffi::OsString]) -> Result<()> {
-    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
-    let helper = if sibling.is_file() {
-        sibling.into_os_string()
-    } else {
-        "swarmy-auth".into()
-    };
-    let mut process = std::process::Command::new(helper);
+/// The `swarmy-auth` command line: global flags first, then the subcommand.
+fn helper_command(
+    program: std::ffi::OsString,
+    auth_file: Option<PathBuf>,
+    json: bool,
+    swarm: Option<&str>,
+    argv: &[std::ffi::OsString],
+) -> std::process::Command {
+    let mut process = std::process::Command::new(program);
     if json {
         process.arg("--json");
     }
     if let Some(file) = auth_file {
         process.arg("--auth-file").arg(file);
     }
+    if let Some(swarm) = swarm {
+        process.arg("--swarm").arg(swarm);
+    }
     process.args(argv);
+    process
+}
+
+/// Shell out to the `swarmy-auth` helper so terminal OAuth flows stay out of
+/// this binary.
+fn helper(auth_file: Option<PathBuf>, json: bool, argv: &[std::ffi::OsString]) -> Result<()> {
+    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
+    let program = if sibling.is_file() {
+        sibling.into_os_string()
+    } else {
+        "swarmy-auth".into()
+    };
+    let mut process = helper_command(program, auth_file, json, crate::target::flag(), argv);
     let status = process.status().map_err(|error| {
         anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
     })?;
@@ -278,6 +292,18 @@ fn helper(auth_file: Option<PathBuf>, json: bool, argv: &[std::ffi::OsString]) -
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use clap::Parser;
+
+    #[test]
+    fn helper_passes_the_selected_swarm() {
+        let args = ["import".into()];
+        let command = super::helper_command("swarmy-auth".into(), None, true, Some("hz"), &args);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--json", "--swarm", "hz", "import"]
+        );
+        let command = super::helper_command("swarmy-auth".into(), None, true, None, &args);
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["--json", "import"]);
+    }
 
     #[test]
     fn quota_flags_parse_without_connecting_to_the_stack() {

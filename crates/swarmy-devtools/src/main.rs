@@ -7,6 +7,9 @@ struct Cli {
     json: bool,
     #[arg(long)]
     auth_file: Option<std::path::PathBuf>,
+    /// Talk to this swarm (overrides SWARMY_SWARM, SWARMY_API_URL and the current swarm)
+    #[arg(long)]
+    swarm: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -48,6 +51,7 @@ fn main() -> anyhow::Result<()> {
                     },
                     cli.auth_file,
                     cli.json,
+                    cli.swarm,
                 )
                 .await
             }
@@ -56,9 +60,22 @@ fn main() -> anyhow::Result<()> {
                     auth_command::Command::Import { file, label },
                     cli.auth_file,
                     cli.json,
+                    cli.swarm,
                 )
                 .await
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[test]
+    fn selected_swarm_parses() {
+        let cli = Cli::try_parse_from(["swarmy-auth", "--swarm", "hz", "import"]).unwrap();
+        assert_eq!(cli.swarm.as_deref(), Some("hz"));
+    }
 }
