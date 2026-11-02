@@ -3064,6 +3064,7 @@ async fn a_capacity_park_keeps_its_shortfall_until_the_wait_clears() {
     let (wait, stored) = f.store.session_wait_detail(id).await.unwrap().unwrap();
     assert_eq!(stored, Some(shortfall));
     assert!(wait.reasons(stored)[0].contains("MiB of memory"));
+    assert!(f.store.wake_wait(id, timestamp(130)).await.unwrap());
     let lease = f
         .store
         .claim_lease(id, owner(), timestamp(10_000))
@@ -3084,6 +3085,25 @@ async fn a_capacity_park_keeps_its_shortfall_until_the_wait_clears() {
         f.store.session_wait_detail(id).await.unwrap().unwrap().1,
         None
     );
+    assert!(f.store.wake_wait(id, timestamp(170)).await.unwrap());
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            Some(shortfall),
+            timestamp(180),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    f.store.clear_session_wait(id).await.unwrap();
+    assert!(f.store.session_wait_detail(id).await.unwrap().is_none());
 }
 
 #[tokio::test]

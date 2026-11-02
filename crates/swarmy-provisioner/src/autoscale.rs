@@ -419,6 +419,21 @@ mod tests {
         }
     }
     #[test]
+    fn an_unfit_wait_does_not_keep_an_idle_machine() {
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        let idle = machine(1, MachineState::Joined, vec![], 0, Some(at(0)));
+        assert!(matches!(
+            decide(
+                &group(1, 1, 1),
+                &[idle],
+                &fitting(Some(12288), &[big]).0,
+                at(31)
+            ),
+            Decision::Lower { desired: 0, .. }
+        ));
+    }
+    #[test]
     fn one_shared_wait_raises_to_one_with_its_cause() {
         let mut w = wait(GpuRequirement::Shared);
         w.gpu_request = Some(GpuRequest {
