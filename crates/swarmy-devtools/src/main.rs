@@ -7,7 +7,7 @@ struct Cli {
     json: bool,
     #[arg(long)]
     auth_file: Option<std::path::PathBuf>,
-    /// Talk to this swarm (overrides SWARMY_SWARM, SWARMY_API_URL and the current swarm)
+    /// Talk to this swarm (overrides `SWARMY_SWARM`, `SWARMY_API_URL` and the current swarm)
     #[arg(long)]
     swarm: Option<String>,
     #[command(subcommand)]
