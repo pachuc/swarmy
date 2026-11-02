@@ -90,7 +90,7 @@ ad hoc against the local API with `--swarm local`.
 ## GPU tasks
 
 Tasks that build or test graphical software may need a machine with an NVIDIA
-card. The GPU machines are Scaleway L4 instances rented by the hour. Swarmy
+card. The GPU machines are AWS g6.xlarge instances in us-west-2, each with one NVIDIA L4 card, rented by the hour by the hz swarm's autoscaled `gpu` group. Swarmy
 records each machine in its machine ledger.
 
 `scripts/fleet/fleet launch TASK --gpu shared|dedicated` puts the worker on a
@@ -125,8 +125,9 @@ A capacity wait gives up after `[scheduler] max_session_wait_secs` (default
 one hour) and the tool call fails. The worker can then call `release_gpu`. To
 stop the wait sooner, use `fleet kill TASK`.
 
-This does not change the worker image; making `swarmy-dev` use the card is a
-separate task in the GPU goal.
+`swarmy-dev` has the display stack; in a GPU sandbox its X display and OpenGL
+run on the card (see [graphics.md](graphics.md)). `scripts/node-suites/gpu-proof.sh`
+checks that end to end.
 
 ## Subscription limits
 
