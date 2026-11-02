@@ -1352,6 +1352,21 @@ async fn a_gpu_wait_buys_a_machine_named_after_its_cause() {
     );
 }
 #[tokio::test]
+async fn a_wait_larger_than_the_group_machine_buys_nothing() {
+    let Some(f) = Fixture::autoscaled(1, Arc::new(FakeNodes::default())).await else {
+        return;
+    };
+    f.store
+        .set_elastic_group_node_memory("gpu", 512)
+        .await
+        .unwrap();
+    let (_agent, _session) = gpu_waiter(&f, "oversized", "shared", "needs a GPU").await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 0);
+    assert!(f.records().await.is_empty());
+}
+
+#[tokio::test]
 async fn an_idle_machine_is_removed_after_thirty_minutes() {
     let nodes = Arc::new(FakeNodes::default());
     let Some(f) = Fixture::autoscaled(1, nodes.clone()).await else {
