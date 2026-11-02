@@ -1,11 +1,24 @@
-use crate::vol_command::Command;
+mod command;
+mod server;
+
+use std::ffi::OsString;
+
+/// Run developer volume commands with the local store.
+pub(crate) fn run(args: Vec<OsString>) -> Result<()> {
+    swarmy_config::init_tracing();
+    let _settings = swarmy_config::Settings::load()?;
+    let _network = swarmy_store::boot();
+    tokio::runtime::Runtime::new()?.block_on(run_cli(args))
+}
+
 use anyhow::{Context, Result};
+use command::Command;
 use std::fmt::Write;
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
 
-/// Developer volume tools, served from the node daemon: attach and snapshot
-/// need local devices and the store, neither of which the client links.
+/// Developer volume tools: attach and snapshot need local devices and the
+/// store, neither of which the client links.
 #[derive(clap::Parser)]
 #[command(name = "vol", about = "Create, attach, and snapshot durable volumes")]
 pub(crate) struct VolCli {
@@ -16,36 +29,35 @@ pub(crate) struct VolCli {
     command: Command,
 }
 
-pub(crate) async fn run_cli(args: Vec<std::ffi::OsString>) -> Result<()> {
+pub(crate) async fn run_cli(args: Vec<OsString>) -> Result<()> {
     let cli = match <VolCli as clap::Parser>::try_parse_from(
-        std::iter::once(std::ffi::OsString::from("vol")).chain(args),
+        std::iter::once(OsString::from("vol")).chain(args),
     ) {
         Ok(cli) => cli,
         // Help and version exit from here with their own status codes.
         Err(error) => error.exit(),
     };
-    run(cli.command, cli.json).await
+    execute(cli.command, cli.json).await
 }
 
-pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
+async fn execute(command: Command, json: bool) -> Result<()> {
     match command {
         Command::Attach {
             volume,
             device,
             background,
         } => {
-            crate::vol_server::attach(VolumeId::from_ulid(volume), device, background, json)
-                .await?;
+            server::attach(VolumeId::from_ulid(volume), device, background, json).await?;
         }
         Command::Flush {
             volume,
             mount,
             freeze,
         } => {
-            crate::vol_server::flush(VolumeId::from_ulid(volume), mount, freeze, json).await?;
+            server::flush(VolumeId::from_ulid(volume), mount, freeze, json).await?;
         }
         Command::Checkpoint { volume, mount } => {
-            crate::vol_server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
+            server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
         }
         Command::Snapshot { volume } => {
             let id = VolumeId::from_ulid(volume);
@@ -56,7 +68,7 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
                 .as_ref()
                 .is_some_and(|lease| lease.expires_at > jiff::Timestamp::now())
             {
-                crate::vol_server::control(id, None, false, json).await?;
+                server::control(id, None, false, json).await?;
             } else {
                 output(
                     &serde_json::json!({"volume_id": id, "manifest_id": record.head_manifest}),
@@ -66,7 +78,7 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
             }
         }
         Command::Detach { volume } => {
-            crate::vol_server::control(VolumeId::from_ulid(volume), None, true, json).await?;
+            server::control(VolumeId::from_ulid(volume), None, true, json).await?;
         }
         other => inspect(other, &store().await?, json).await?,
     }
@@ -154,9 +166,9 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
 pub(crate) fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
     use std::io::Write;
     if json {
-        println!("{value}");
+        crate::print_volume_output(value);
     } else {
-        println!("{text}");
+        crate::print_volume_output(text);
     }
     std::io::stdout().flush()?;
     Ok(())
@@ -183,13 +195,6 @@ mod docs_command_tests {
             .subcommand(clap::Command::new("worker"))
             .subcommand(clap::Command::new("gateway"))
             .subcommand(clap::Command::new("api"))
-            .subcommand(
-                clap::Command::new("node").arg(
-                    clap::Arg::new("upgrade-processes")
-                        .long("upgrade-processes")
-                        .action(clap::ArgAction::SetTrue),
-                ),
-            )
             .subcommand(super::VolCli::command());
         swarmy_testkit::check_docs_commands(&root, &[("swarmy-core", &command)])
             .expect("documented swarmy-core commands match the role tree");

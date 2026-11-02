@@ -40,10 +40,13 @@ Upload chunks before building the manifest. After `build` succeeds, register its
 header under a fresh `ManifestId` using `Store::put_manifest`. Failed builds can
 leave unreferenced immutable objects for later garbage collection.
 
+The chunk collector lives in [collector.rs](../swarmy-store/src/collector.rs).
+
 ## FoundationDB records
 
 Shared ids, hashes, headers, and volume records live in `swarmy-core`.
-`swarmy-store` owns the versioned tuple keys:
+`swarmy-store` owns the versioned tuple keys. The volume library reaches
+these records only through `VolumeMetadata`, implemented by `swarmy-store`:
 
 - `("manifest", id)` holds `{ size, chunk_size, root_hash }`. An id cannot be
   replaced with a different header.
@@ -192,7 +195,9 @@ Clones begin unleased and share immutable objects, with independent local writes
 Their retained history starts at the cloned head; source retention is independent.
 
 Attach selects an unused `/dev/nbd0` through `/dev/nbd15`, or accepts `--device`.
-It renews a 60-second writer lease every 15 seconds. Flush, checkpoint, snapshot, and detach
+The caller opens the writer (`Store::open_volume_writer` acquires a 60-second
+lease and renews it every 15 seconds). The attachment disconnects when the lease
+is lost or its local deadline passes. Flush, checkpoint, snapshot, and detach
 send requests to `.swarmy/volumes/VOLUME.sock` under the discovered configuration
 root. Invoke commands with the same configuration root and node id; root-created
 sockets generally require sudo for control commands too. A local lock protects
@@ -223,8 +228,8 @@ without root or the required environment. Build without sudo:
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo test -p swarmyd --test vol --no-run --message-format=json > /tmp/swarmy-vol-build.json
-sudo -E "$(jq -r 'select(.executable != null and .target.name == "vol") | .executable' /tmp/swarmy-vol-build.json)" --nocapture
+cargo test -p swarmy-core-bin --test vol --no-run --message-format=json > /tmp/swarmy-volume-test-build.json
+sudo -E "$(jq -r 'select(.executable != null and .target.name == "vol") | .executable' /tmp/swarmy-volume-test-build.json)" --nocapture
 ```
 
 The test's cleanup guards unmount and stop servers on failure. The crash test
@@ -235,12 +240,13 @@ failed-publication retry, trim, and untouched-leaf reuse.
 ### Shared attachment service
 
 `server::attach` is the shared foreground service used by the CLI and swarmyd.
-It accepts `ServerConfig` (node id, local directory, store, and object storage),
-a volume id, an optional device path, a background-upload flag, a readiness
+It accepts `ServerConfig` (node id, local directory, metadata, and object storage),
+a `WriterGrant` (lease, head, and header), an optional device path, a background-upload flag, a readiness
 callback, and a shutdown future. Readiness follows kernel capacity publication.
 `server::control` returns the manifest id after flush or detach. The service
 owns the local lock, control socket, overlay, kernel attachment, background
-uploader, snapshot loop, and renewal task for its whole lifetime. Callers supply shutdown
+uploader, snapshot loop for its whole lifetime. The grant owns the renewal task;
+the attachment does not renew the lease. Callers supply shutdown
 policy and presentation; the CLI supplies signals and prints readiness, while
 the sandbox runtime mounts the ready device and controls detach itself.
 
@@ -320,3 +326,16 @@ tracing event, and background batches emit a debug event with their counters.
 For release and debug installation measurements and serial request latency,
 see `scripts/benchmarks/volume.py --help`, the `cloud-object-requests` example,
 and the dated procedure in `docs/volume-benchmarks.md`.
+
+## Boot sets
+
+A new image gets its boot set from a node-run image probe at registration.
+
+An attachment records demand-read chunk hashes in first-read order, including
+cache hits but excluding zero blocks, dirty data and readahead. Recording stops
+at the `boot_set` control query and caps at 4,096 chunks (1 GiB). A set is
+stored as `bootsets/<blake3 hex>`; its object bytes are verified on lookup.
+The server prefetches leaves in parallel, then chunks with
+`[sandbox] boot_prefetch_concurrency` requests (default 32). Its 1,024 striped
+fill locks deduplicate overlapping fetches without putting unrelated demand
+reads behind boot requests. Bad or stale entries do not stop demand reads.

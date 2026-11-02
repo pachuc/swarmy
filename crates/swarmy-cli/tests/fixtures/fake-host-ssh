@@ -1,6 +1,13 @@
 #!/bin/bash
 root=$(dirname "$(dirname "$0")")
 last="${@: -1}"
+printf '%s\0' "$last" >> "$root/ssh-raw-commands"
+if [[ -e $root/fail-sudo && $last == 'sudo -n '* ]]; then echo 'sudo: a password is required' >&2; exit 1; fi
+# A non-root login sends each node command as sudo -n bash -c '<command>'; answer the command itself.
+if [[ $last == 'sudo -n bash -c '* ]]; then
+    eval "inner=(${last#sudo -n bash -c })"
+    last=${inner[0]}
+fi
 printf '%s\n' "$last" >> "$root/ssh-commands"
 printf '%s\n' "$*" >> "$root/ssh-full-commands"
 case "$last" in
@@ -10,7 +17,20 @@ case "$last" in
   'uname -m') /usr/bin/uname -m ;;
   *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;
   *'journalctl --unit swarmyd --follow --no-pager --lines 100'*) if [ -e "$root/fail-journal" ]; then echo journal-failed >&2; exit 23; fi; echo remote-output ;;
-  *'remote-upgrade.sh'*) if [ -e "$root/fail-upgrade-primary" ] && [[ " $* " == *203.0.113.10* ]]; then echo upgrade-failed >&2; exit 23; fi; printf '{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}\n' ;;
+  *'remote-upgrade.sh'*) if { [ -e "$root/fail-upgrade-primary" ] && [[ " $* " == *203.0.113.10* ]]; } || { [ -e "$root/fail-upgrade-node" ] && [[ " $* " == *203.0.113.11* ]]; }; then echo upgrade-failed >&2; exit 23; fi; printf '{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}\n' ;;
+  *'tunnel-key.pub'*) printf 'ssh-ed25519 AAAATEST test\n' ;;
+  *'.swarmy/node-id'*'&& cat '* )
+    if [[ $last =~ printf[[:space:]]%s[[:space:]]([0-9A-HJKMNP-TV-Z]{26}) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}" > "$root/fake-node-id"
+    fi
+    cat "$root/fake-node-id" ;;
+  *'node-credential issue '* )
+    if [[ $last =~ node-credential[[:space:]]issue[[:space:]]([0-9A-HJKMNP-TV-Z]{26}) ]]; then
+        printf 'swn.%s.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' "${BASH_REMATCH[1]}"
+    else
+        exit 1
+    fi ;;
+  *'node-credential revoke '* ) : ;;
   'cat ~swarmy/swarmy/.dev/fdb.cluster') printf 'test:test@127.0.0.1:4500\n' ;;
   *'cat ~swarmy/swarmy/.swarmy/tunnel-key.pub') printf 'ssh-ed25519 AAAATEST test\n' ;;
   'cat /etc/ssh/ssh_host_ed25519_key.pub') printf 'ssh-ed25519 AAAATEST test\n' ;;

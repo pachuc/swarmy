@@ -82,17 +82,22 @@ pub(crate) async fn verify(
     let objects = objects()?;
     let root = files.join(".swarmy/verify");
     let _cleanup = Cleanup(root.clone());
+    let node = NodeId::from_ulid(ulid::Ulid::generate());
     let runtime = RuncRuntime::open(
         root,
         ServerConfig {
             directory: files.join(".swarmy/verify-volumes"),
-            node: NodeId::from_ulid(ulid::Ulid::generate()),
-            store: store.clone(),
+            node,
+            metadata: Arc::new(store.clone()),
             objects,
         },
+        swarmy_store::StoreSandboxMetadata::new(store.clone(), node),
     )
     .await?;
     let result = async {
+        let grant = store
+            .open_volume_writer(volume_id, swarmy_core::LeaseOwnerId::from(node))
+            .await?;
         let sandbox = runtime
             .create(
                 SandboxSpec {
@@ -101,6 +106,8 @@ pub(crate) async fn verify(
                     requirements: swarmy_core::SandboxRequirements::default(),
                 },
                 BlockDevice { volume_id },
+                grant,
+                None,
             )
             .await?;
         let (send, mut receive) = tokio::sync::mpsc::channel(16);
@@ -225,6 +232,6 @@ pub(crate) fn cleanup(root: &Path) {
 
 fn objects() -> Result<Arc<dyn object_store::ObjectStore>> {
     let settings = swarmy_config::Settings::load()?.settings;
-    let objects = swarmy_store::objects::from_settings(&settings)?;
+    let objects = swarmy_volume::objects::from_settings(&settings)?;
     Ok(objects)
 }

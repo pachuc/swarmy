@@ -104,16 +104,6 @@ pub fn connect_to(url: &str, token: String) -> Result<(Client, String), Error> {
     })?;
     Ok((client, url.into()))
 }
-/// Resolve and connect when the API is directly reachable.
-/// # Errors
-/// Returns resolution, connection, or `NeedsTunnel` errors.
-pub fn connect(flag: Option<&str>) -> Result<(Client, String), Error> {
-    match resolve(flag)? {
-        Api::Direct { url, token } => connect_to(&url, token),
-        Api::Tunnel { swarm, .. } => Err(Error::NeedsTunnel { swarm }),
-    }
-}
-
 /// Include the endpoint in an API failure.
 #[must_use]
 pub fn api_error(error: Error, endpoint: &str) -> Error {
@@ -220,6 +210,7 @@ mod tests {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: std::collections::BTreeMap::new(),
         }
     }
     #[test]

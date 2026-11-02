@@ -247,9 +247,7 @@ async fn recall_after_restart(
 
 async fn restart_all(f: &mut Fixture, agent: AgentId) -> Result<()> {
     // All services, including the node, are stopped before any are started again.
-    for process in &mut f.processes {
-        process.stop().await?;
-    }
+    f.stop_all().await?;
     ensure!(
         f.store.get_by_agent(agent).await?.is_none(),
         "node did not release the computer"

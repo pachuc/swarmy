@@ -103,11 +103,10 @@ impl Manifest {
         usize::try_from(block).map_err(|_| VolumeError::InvalidBlock(block))
     }
 
-    pub(crate) async fn leaf(
-        &self,
-        store: &dyn ObjectStore,
-        index: usize,
-    ) -> Result<Vec<ContentHash>> {
+    /// Load a manifest leaf for collector traversal.
+    /// # Errors
+    /// Returns object storage or integrity failures.
+    pub async fn leaf(&self, store: &dyn ObjectStore, index: usize) -> Result<Vec<ContentHash>> {
         let hash = self.leaves[index];
         if hash == ContentHash::ZERO {
             return Ok(vec![ContentHash::ZERO; BLOCKS_PER_LEAF]);

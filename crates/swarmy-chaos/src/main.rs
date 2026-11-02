@@ -7,7 +7,9 @@ mod disk;
 mod measure;
 mod persistent;
 mod process;
+mod requests;
 mod saturation;
+mod timings;
 
 use std::{
     ffi::OsString,
@@ -27,7 +29,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use swarmy_bus::{Bus, Config as BusConfig, SubjectToken};
 use swarmy_core::{
-    Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
+    Event, Message, MessageId, MessageRole, NodeId, NodeRole, Part, SessionId, SessionState,
+    WakeReply,
 };
 use swarmy_store::{
     AgentSessionOptions, MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore, runnable_partition,
@@ -70,6 +73,7 @@ struct Fixture {
     sessions: Vec<SessionId>,
     image: Option<swarmy_core::ManifestId>,
     image_memory_mib: Option<u64>,
+    node_api: Option<String>,
     environment: Vec<(OsString, OsString)>,
 }
 
@@ -101,8 +105,24 @@ impl Fixture {
             sessions: Vec::new(),
             image: None,
             image_memory_mib: None,
+            node_api: None,
             environment: Vec::new(),
         })
+    }
+
+    /// Give a node its own identity and credential for the node API.
+    async fn node_identity(&self, node: NodeId, root: &Path) -> Result<Vec<(OsString, OsString)>> {
+        use std::os::unix::fs::PermissionsExt;
+        let url = self.node_api.as_ref().context("node API is not running")?;
+        let file = root.join("node-token");
+        let token = self.store.issue_node_credential(node).await?;
+        std::fs::write(&file, format!("{}\n", token.reveal()))?;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+        Ok(vec![
+            ("SWARMY_NODE_ID".into(), node.to_string().into()),
+            ("SWARMY_NODE_API_URL".into(), url.into()),
+            ("SWARMY_NODE_TOKEN_FILE".into(), file.into_os_string()),
+        ])
     }
 
     async fn import_image(&mut self, image: &str) -> Result<()> {
@@ -195,11 +215,19 @@ impl Fixture {
             })?,
         )?;
         let environment = self.service_environment(config)?;
+        let mut node_api_environment = environment.clone();
+        if config.image.is_some() {
+            let port = process::free_port(config.node_api_host)?;
+            let listen = std::net::SocketAddr::new(config.node_api_host, port);
+            self.node_api = Some(format!("http://{listen}"));
+            node_api_environment.push(("SWARMY_NODE_API_LISTEN".into(), listen.to_string().into()));
+        }
         for (kind, count) in [
             (Kind::Scheduler, config.schedulers),
             (Kind::Worker, config.workers),
             (Kind::Gateway, config.gateways),
             (Kind::Api, 1),
+            (Kind::NodeApi, usize::from(config.image.is_some())),
             (
                 Kind::Node,
                 usize::from(
@@ -208,26 +236,41 @@ impl Fixture {
             ),
         ] {
             for index in 0..count {
-                self.processes.push(Process::start(
+                let (slot_environment, netns) = if kind == Kind::Node {
+                    let mut env = environment.clone();
+                    env.extend(
+                        self.node_identity(NodeId::from_ulid(Ulid::generate()), self.files.path())
+                            .await?,
+                    );
+                    (env, config.node_netns.as_deref())
+                } else if kind == Kind::NodeApi {
+                    (node_api_environment.clone(), None)
+                } else {
+                    (environment.clone(), None)
+                };
+                self.processes.push(Process::start_in(
                     kind,
                     index,
                     binaries,
                     self.files.path(),
-                    &environment,
+                    &slot_environment,
+                    netns,
                 )?);
             }
         }
         self.ready().await?;
-        self.environment = environment;
-        if config.scenario == Some(Scenario::Desktop) {
-            Ok(())
-        } else {
-            self.create_sessions(
-                config.sessions,
-                config.scenario == Some(Scenario::Persistent),
-            )
-            .await
+        if self
+            .processes
+            .iter()
+            .any(|process| process.kind == Kind::Node)
+        {
+            let since = Timestamp::now()
+                .checked_sub(Duration::from_secs(60))
+                .context("node liveness window")?;
+            self.node_ready(since).await?;
         }
+        self.environment = environment;
+        Ok(())
     }
 
     fn service_environment(&self, config: &Config) -> Result<Vec<(OsString, OsString)>> {
@@ -345,6 +388,28 @@ impl Fixture {
         .context("scheduler startup timed out")?
     }
 
+    /// Wait until a sandbox node this fixture started has registered, so the
+    /// first tool call finds capacity instead of parking for the capacity retry.
+    async fn node_ready(&mut self, since: Timestamp) -> Result<()> {
+        timeout(Duration::from_secs(60), async {
+            loop {
+                for process in &mut self.processes {
+                    process.check()?;
+                }
+                let (nodes, _) = self.store.scan_live_nodes(None, since, 64).await?;
+                if nodes
+                    .iter()
+                    .any(|node| node.roles.contains(&NodeRole::Sandbox))
+                {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("sandbox node registration timed out")?
+    }
+
     async fn create_sessions(&mut self, count: usize, shared: bool) -> Result<()> {
         let agent = if shared {
             Some(
@@ -363,41 +428,89 @@ impl Fixture {
             None
         };
         for _ in 0..count {
-            let id = loop {
-                let id = SessionId::from_ulid(Ulid::generate());
-                if runnable_partition(id) < 4 {
-                    break id;
-                }
-            };
+            let id = self.create_session(agent).await?;
             self.sessions.push(id);
-            self.store
-                .create_agent_session(
-                    id,
-                    agent,
-                    Timestamp::now(),
-                    Some(AgentSessionOptions {
-                        image: if shared { None } else { Some("chaos:test") },
-                        ..Default::default()
-                    }),
-                )
-                .await?;
-            self.store
-                .append_events(
-                    id,
-                    0,
-                    &[Event::MessageAppended {
-                        seq: 0,
-                        message: Message {
-                            id: MessageId::from_ulid(Ulid::generate()),
-                            role: MessageRole::User,
-                            parts: vec![Part::Text {
-                                text: "Read the clock at each step, then finish.".into(),
-                            }],
-                        },
-                    }],
-                )
-                .await?;
         }
+        Ok(())
+    }
+
+    async fn create_session(&self, agent: Option<swarmy_core::AgentId>) -> Result<SessionId> {
+        let id = loop {
+            let id = SessionId::from_ulid(Ulid::generate());
+            if runnable_partition(id) < 4 {
+                break id;
+            }
+        };
+        self.store
+            .create_agent_session(
+                id,
+                agent,
+                Timestamp::now(),
+                Some(AgentSessionOptions {
+                    image: if agent.is_some() {
+                        None
+                    } else {
+                        Some("chaos:test")
+                    },
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        self.store
+            .append_events(
+                id,
+                0,
+                &[Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::User,
+                        parts: vec![Part::Text {
+                            text: "Read the clock at each step, then finish.".into(),
+                        }],
+                    },
+                }],
+            )
+            .await?;
+        Ok(id)
+    }
+
+    async fn prime_boot_set(&mut self, config: &Config) -> Result<()> {
+        let id = self.create_session(None).await?;
+        watch(&self.store, &self.bus, id, config).await?;
+        let image = self.image.context("image required to prime boot set")?;
+        let key = timeout(Duration::from_secs(60), async {
+            loop {
+                if let Some(key) = self.store.boot_set(image).await? {
+                    break Ok::<_, anyhow::Error>(key);
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("boot set priming timed out")??;
+        let node = self
+            .processes
+            .iter_mut()
+            .find(|p| p.kind == Kind::Node)
+            .context("priming requires a sandbox node")?;
+        node.stop().await?;
+        // The stopping node keeps syncing until it exits, so only a heartbeat
+        // after that shows the new process registered. A session placed on the
+        // node before then would be refused as a stopped epoch by the new process.
+        let restarted = Timestamp::now();
+        let cache = self.files.path().join(".swarmy/volumes/cache");
+        if let Err(error) = std::fs::remove_dir_all(cache)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error.into());
+        }
+        node.start_stopped()?;
+        self.node_ready(restarted).await?;
+        // The priming session is idle, so its provider calls are all logged;
+        // drop them so the call count covers only the measured sessions.
+        std::fs::write(self.files.path().join("calls"), "")?;
+        tracing::info!(%key, "boot set primed");
         Ok(())
     }
 
@@ -424,8 +537,8 @@ impl Fixture {
         // Stop consumers before taking the final call count, including any unexpected late retry.
         for process in &mut self.processes {
             process.check()?;
-            process.stop().await?;
         }
+        self.stop_all().await?;
         for id in &self.sessions {
             let session = self
                 .store
@@ -470,10 +583,17 @@ impl Fixture {
         Ok(gateway_kills)
     }
 
-    async fn cleanup(&mut self) -> Result<()> {
-        for process in &mut self.processes {
+    /// Stop every service in reverse start order, so a node shuts down while
+    /// the node API it flushes volumes and releases computers through still serves.
+    pub(crate) async fn stop_all(&mut self) -> Result<()> {
+        for process in self.processes.iter_mut().rev() {
             process.stop().await?;
         }
+        Ok(())
+    }
+
+    async fn cleanup(&mut self) -> Result<()> {
+        self.stop_all().await?;
         let blobs = ObjectBlobStore::from_env()?;
         for id in &self.sessions {
             if let Some(session) = self.store.fetch_session(*id).await?
@@ -548,6 +668,22 @@ async fn exercise_suite(
     timeout(Duration::from_secs(60), fixture.start(config, binaries))
         .await
         .context("session setup timed out")??;
+    if config.prime_boot_set {
+        // Priming runs a whole cold start, which outlasts the setup budget at
+        // high round trips; each of its steps has its own deadline.
+        fixture.prime_boot_set(config).await?;
+    }
+    if config.scenario != Some(Scenario::Desktop) {
+        timeout(
+            Duration::from_secs(60),
+            fixture.create_sessions(
+                config.sessions,
+                config.scenario == Some(Scenario::Persistent),
+            ),
+        )
+        .await
+        .context("session setup timed out")??;
+    }
     match config.scenario {
         Some(Scenario::Desktop) => {
             desktop::exercise(fixture, config.desktop_output.as_deref()).await?;
@@ -569,7 +705,21 @@ async fn exercise_suite(
             Ok(0)
         }
         Some(Scenario::Saturation) => unreachable!("saturation starts its own services above"),
-        None => fixture.exercise(config, seed).await,
+        None => {
+            let calls = fixture.exercise(config, seed).await?;
+            if config.image.is_some() {
+                let gates = timings::Gates {
+                    max_warm_overhead_ms: config.max_warm_overhead_ms,
+                    max_cold_start_ms: config.max_cold_start_ms,
+                    require_stamps: config.kills == 0 && !config.kill_node_mid_command,
+                };
+                timings::report(&fixture.store, &fixture.sessions, &gates).await?;
+            }
+            if let Some(max_ms) = config.max_node_request_ms {
+                requests::check_node_logs(fixture.files.path(), max_ms)?;
+            }
+            Ok(calls)
+        }
     }
 }
 
@@ -820,5 +970,47 @@ impl Drop for Fixture {
         if self.image.is_some() {
             disk::cleanup(&self.files.path().join(".swarmy/node"));
         }
+    }
+}
+
+#[cfg(test)]
+mod node_identity_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn node_identity_names_node_api_and_token() {
+        let Some(_stack) = swarmy_testkit::Stack::load("chaos-node-identity") else {
+            return;
+        };
+        let mut fixture = Fixture::new().await.unwrap();
+        fixture.node_api = Some("http://127.0.0.1:1".into());
+        let node = NodeId::from_ulid(Ulid::generate());
+        let env = fixture
+            .node_identity(node, fixture.files.path())
+            .await
+            .unwrap();
+        assert_eq!(env.len(), 3);
+        assert_eq!(env[0], ("SWARMY_NODE_ID".into(), node.to_string().into()));
+        assert_eq!(
+            env[1],
+            ("SWARMY_NODE_API_URL".into(), "http://127.0.0.1:1".into())
+        );
+        let file = fixture.files.path().join("node-token");
+        assert_eq!(
+            env[2],
+            (
+                "SWARMY_NODE_TOKEN_FILE".into(),
+                file.clone().into_os_string()
+            )
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let token = swarmy_core::NodeToken::parse(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert_eq!(token.node(), node);
+        assert!(fixture.store.verify_node_credential(&token).await.unwrap());
     }
 }

@@ -140,3 +140,22 @@ async fn pins() {
         path
     );
 }
+
+#[tokio::test]
+async fn explicit_override_resolves_without_download() {
+    use swarmy_infra::Tofu;
+    let cache = tempfile::tempdir().unwrap();
+    let missing = cache.path().join("missing-tofu");
+    assert!(
+        matches!(Tofu::resolve_with(Some(missing.as_os_str()), cache.path()).await, Err(Error::TofuBinMissing(path)) if path == missing)
+    );
+    let binary = cache.path().join("tofu");
+    std::fs::write(&binary, b"fake").unwrap();
+    assert_eq!(
+        Tofu::resolve_with(Some(binary.as_os_str()), cache.path())
+            .await
+            .unwrap()
+            .binary(),
+        binary
+    );
+}

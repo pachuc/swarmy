@@ -1,22 +1,25 @@
 # Node agent
 
-`swarmyd` registers a node in FoundationDB, refreshes its heartbeat, and hosts
+`swarmy-node` (built by `swarmyd`) registers with the primary node API using `[node] api_url` and `token_file`, retries registration until the API answers, recovers previous placement epochs, and hosts
 runc sandboxes and their NBD volume servers. It uses the same shared attachment
 service as `swarmy-core vol attach`, including writer fencing, lease renewal,
 background uploads, periodic snapshots, and final checkpoint on detach. Calls
-arrive on the node tool queue and share one computer per agent.
+arrive on the node tool queue and share one computer per agent. The lease keeper
+sends one sync every five seconds to renew hosting, tool and writer leases.
+The node answers memory requests and exposes a control socket used by the
+drain helper.
 
-Developer volume tools live here as `swarmy-core vol` (`create`, `attach`,
+Developer volume tools live in `swarmy-core-bin` as `swarmy-core vol` (`create`, `attach`,
 `detach`, `flush`, `checkpoint`, `snapshot`, `clone`, `ls`, `show`); the
 `swarmy` client no longer ships them because they need direct store access.
 
-Run the binary as root after starting the dev stack:
+The `swarmy-node` binary links no store or FoundationDB library. Run it as root after starting the dev stack:
 
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo build -p swarmy-core-bin -p swarmy-cli
-sudo -E target/debug/swarmy-core node
+cargo build -p swarmyd -p swarmy-cli
+sudo -E target/debug/swarmy-node
 ```
 
 Configuration comes from `swarmy-config`. The existing `[node] id` setting or
@@ -29,9 +32,13 @@ secondary count cap.
 
 | TOML setting | Environment override | Default |
 | --- | --- | --- |
+| `[node] api_url` (not used by the node yet) | `SWARMY_NODE_API_URL` | `http://127.0.0.1:8743` |
+| `[node] token_file` (not used by the node yet) | `SWARMY_NODE_TOKEN_FILE` | `/etc/swarmy/node-token` |
 | `[node] roles` | `SWARMY_NODE_ROLES` (comma-separated) | `["sandbox", "volume"]` |
 | `[node.capacity] cpu_millis` | `SWARMY_NODE_CPU_MILLIS` | `1000` |
 | `[node.capacity] memory_bytes` (sandbox budget) | `SWARMY_NODE_MEMORY_BYTES` | `1073741824` |
+| `[node] fake_gpu` (table with model, memory_mib, count) | `SWARMY_NODE_FAKE_GPU` (`MODEL,MEMORY_MIB,COUNT`) | unset |
+| `[node] cdi_spec` (CDI spec for GPU sandboxes, JSON) | `SWARMY_NODE_CDI_SPEC` | `/etc/cdi/nvidia.json` |
 | `[node] memory_reserve_mib` (derive budget from host RAM) | `SWARMY_NODE_MEMORY_RESERVE_MIB` | unset |
 | `[node.capacity] disk_bytes` | `SWARMY_NODE_DISK_BYTES` | `34359738368` |
 | `[node.capacity] sandboxes` | `SWARMY_NODE_SANDBOXES` | `1` |
@@ -107,12 +114,17 @@ Cleanup guards stop containers and unmount after a test failure.
 Start a disk-backed session with `swarmy run --image base-ubuntu:TAG "PROMPT"`.
 The CLI pins the image manifest before waking the session. The worker records
 sandbox tool request events, asks the scheduler for a live sandbox node, and atomically
-stores tool jobs while releasing the session into `WaitingTools`. A recovery
-scan republishes pending jobs if a process dies before publishing to NATS.
+stores tool jobs while releasing the session into `WaitingTools`. A recovery scan on every worker re-checks each pending job's placement on every tick.
+It republishes a job at once the first time a worker sees it without having
+published it (repairing a publish lost when a process died before reaching
+NATS), then with backoff from 5 s doubling to 60 s. It never rewrites the
+job's dispatch fence, so it cannot conflict with the node's claim.
 
 The node places an unplaced agent locally, accepts a live placement assigned to
 this node, or takes over an expired epoch. It refuses live placements on other
-nodes. A per-agent task records the placement, attached volume, container, and
+nodes. The decision is `Store::open_hosting`, which refuses an epoch this node
+already stopped before renewing anything, so its lease expires and a later call
+takes it over. A per-agent task records the placement, attached volume, container, and
 time since the last completed call. It serializes calls across sessions of that
 agent while other agents execute independently.
 
@@ -122,25 +134,26 @@ pinned image (or imports the published head of its existing slice 2 sandbox).
 Subsequent sessions use that same volume. No attempt volume is created. Clone
 support remains in the volume library for explicit forks.
 
-The container and its processes survive successful calls. Each call has its own
-renewable tool lease, and completion checks both that lease and the placement
-epoch. Output completion does not freeze, flush, or advance the disk. The result's
-manifest id names the latest observed checkpoint; it does not assert durability
-of that call's writes. The attachment continuously stages chunks and publishes
-snapshots according to the shared volume snapshot settings.
+The container and its processes survive successful calls. Tool claims and completions use the node API; the single lease keeper renews the claim through the node API alongside placement and volume writer leases. The store compares the claim by identity, so renewal can race completion safely. Output completion does not freeze, flush, or advance the disk. The result's manifest id names the latest observed checkpoint; it does not assert durability of that call's writes. The attachment continuously stages chunks and publishes snapshots according to the shared volume snapshot settings.
 
-Placement renewal runs every third of the lease duration, including during boot,
-commands, and final checkpoints. Renewal failure or expiry cancels execution,
-stops guest processes, and discards the attachment without publishing. Writer
-acquisition, renewal, and publication also validate the bound placement epoch in
-FoundationDB. A restarted daemon cleans local state first and waits for old
-placement and writer leases to expire before rebuilding under a new epoch.
+The node caches `tool/route` per hosted session. `hosting/open` grants the placement, bound volume, writer lease, head manifest and sandbox spec in one request. After boot the node reports `hosting/ready` asynchronously; `hosting/close` releases the writer and placement. Volume publication, reused-chunk protection, and writer release at detach use the node API. Control socket `Create` and `Resume` carry a caller-acquired `WriterOpening` (the root node tests obtain it with `Store::open_writer_lease`); the node renews it through sync. The node opens no store.
+
+One keeper sends a `sync` for all placements, claims and writers, including call occupancy and the heartbeat. Its period is the shortest of the server interval, configured heartbeat, and one third of each lease (at least 100 ms). The local deadline is the request send instant plus the expiry's remaining duration on the server clock, minus a tenth of the lease length. A refused or expired lease is lost permanently: the placement actor stops and discards its sandbox, a claim stops its call, and a writer disconnects the device. A restarted daemon cleans local state first and waits for old placement and writer leases to expire before rebuilding under a new epoch.
 
 After the idle window without a call, the node stops processes, unmounts,
 publishes a final checkpoint, detaches the device, and releases placement.
 The retained epoch counter makes the next placement report reason `eviction`.
+A placement whose computer never finished booting (the volume or container
+setup failed, or the node began shutting down first) is released as well,
+once any partial local state is discarded: no guest command ran, so nothing
+was lost and the next placement reports `eviction`. Only a failed final
+checkpoint, or a lost lease, leaves the placement to expire, and the node
+that takes it over then records a failure.
 Graceful shutdown does the same for hosted agents, keeping renewal active during
-checkpointing. Idle time starts after a call finishes, so an active call cannot
+checkpointing. The lease keeper stops last. When it stops it sends one last
+sync carrying the metric patches and scratch removals still queued, with no
+lease renewals, bounded by 10 seconds; a failure is logged and the reports
+are dropped. Idle time starts after a call finishes, so an active call cannot
 be evicted. Running managed processes prevent idle eviction; unmanaged background
 processes alone do not reset this timer.
 
@@ -194,19 +207,31 @@ The hosting actor admits tool calls through a bounded FIFO channel per agent.
 Calls waiting for channel capacity retain FIFO admission order. A running call
 finishes or reaches its tool timeout before the next call starts; later calls
 cannot overtake an already queued session. Each call collects its own stdout
-and stderr before committing its result.
+and stderr before committing its result. The first `tool/claim` runs while the sandbox boots. The node pulls up to 16 jobs per NATS pull, claims each through the node API, then awaits `tool/complete` before acknowledging the message. `AlreadyDone` succeeds without rerunning the command. The node API publishes `ToolCompleted` and wakes the session; the completion answer's interrupt flag stops a background process after commit. Bash results use the node volume writer's last published head for `manifest_id`. Screenshots go directly to object storage, with only their key in the result.
 
-Each node heartbeat publishes `swarmy_core::AgentCallStatus` in the separate
-store row `("agent_call_status", agent_id)`. CLI consumers can read it through
-`Store::agent_call_status(agent_id)`. Its fields are `agent_id`, `node_id`,
-`epoch`, `holder_session_id`, `queued_calls`, `observed_at`, and `expires_at`.
+Each keeper sync sends call occupancy to the node API, which writes `swarmy_core::AgentCallStatus` in the separate store row `("agent_call_status", agent_id)`. CLI consumers can read it through `Store::agent_call_status(agent_id)`. Its fields are `agent_id`, `node_id`, `epoch`, `holder_session_id`, `queued_calls`, `observed_at`, and `expires_at`.
 The holder includes sandbox startup and call execution. The queue count excludes
 the holder and includes calls waiting for channel capacity. An idle resident
 computer has a null holder and zero queued calls.
 
-Status is sampled at the configured node heartbeat interval and expires after
+Status is sampled at the keeper sync interval and expires after
 three intervals. The store rejects writes from a replaced or expired placement
 and hides observations after sample expiry, placement expiry, release, deletion,
 or takeover. A missing observation means occupancy is unknown. It must not be
 displayed as an idle computer. These fields report activity and grant no sandbox
 authority. Existing node and placement binary records keep their encoding.
+
+Scratch inventory runs every ten seconds in a separate task. The keeper includes
+sizes, hosted state and idle state in its next node API sync; the server returns
+keep or evict verdicts. The node also evicts oldest eligible scratch under local
+disk pressure and reports all removals in a later sync. Failed syncs skip the
+round without guessing. Memory and instruction requests validate the keeper's
+live placement and epoch; memory cache keys use the content fingerprint, not
+the volume head. GitHub credentials come from the node API only for an agent
+placed live on this node. First-tool computer re-samples use a bounded 1,024
+patch keeper queue, which drops the oldest patch when full and retries after
+failed syncs and is flushed once at shutdown; completion metrics are recorded by the node API.
+
+On a cold start the node passes the boot set from `hosting/open` to the volume server. After the first completed tool call it records the new boot set, writes it directly to object storage and reports its key to the node API. Registering an image queues a probe: one node boots it and runs `bash -c true`, then records the boot set so the first real boot prefetches. The node logs `image probe finished`.
+
+The upgrade drain helper obtains placements and occupancy through the node API, then asks the existing control socket whether each unoccupied placement still has a running process.

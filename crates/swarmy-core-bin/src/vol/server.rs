@@ -3,15 +3,19 @@ use std::path::PathBuf;
 use swarmy_core::VolumeId;
 use swarmy_volume::server::{self, ServerConfig};
 
-async fn config() -> Result<ServerConfig> {
+async fn config() -> Result<(ServerConfig, swarmy_store::Store)> {
     let loaded = swarmy_config::Settings::load()?;
     let settings = &loaded.settings;
-    Ok(ServerConfig {
-        directory: loaded.root.join(".swarmy/volumes"),
-        node: loaded.node_id()?,
-        store: crate::vol::store().await?,
-        objects: swarmy_store::objects::from_settings(settings)?,
-    })
+    let store = super::store().await?;
+    Ok((
+        ServerConfig {
+            directory: loaded.root.join(".swarmy/volumes"),
+            node: loaded.node_id()?,
+            metadata: std::sync::Arc::new(store.clone()),
+            objects: swarmy_volume::objects::from_settings(settings)?,
+        },
+        store,
+    ))
 }
 
 pub(crate) async fn control(
@@ -20,11 +24,11 @@ pub(crate) async fn control(
     detach: bool,
     json: bool,
 ) -> Result<()> {
-    let flushed = server::control_flush(&config().await?, id, mount, detach).await?;
+    let flushed = server::control_flush(&config().await?.0, id, mount, detach).await?;
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
     value["detached"] = serde_json::json!(detach);
-    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)?;
+    super::output(&value, &flushed.manifest_id.to_string(), json)?;
     Ok(())
 }
 
@@ -38,16 +42,20 @@ pub(crate) async fn attach(
         rustix::process::geteuid().is_root(),
         "vol attach requires root; run it with sudo -E"
     );
-    let config = config().await?;
+    let (config, store) = config().await?;
     let node = config.node;
+    let grant = store
+        .open_volume_writer(id, swarmy_core::LeaseOwnerId::from_ulid(node.as_ulid()))
+        .await?;
     let stop = swarmy_config::shutdown_signal();
     server::attach(
         config,
-        id,
+        grant,
+        None,
         path,
         background,
         move |path| {
-            crate::vol::output(
+            super::output(
                 &serde_json::json!({"volume_id": id, "node_id": node, "device": path}),
                 &path.display().to_string(),
                 json,
@@ -67,9 +75,9 @@ pub(crate) async fn flush(
     json: bool,
 ) -> Result<()> {
     let flushed =
-        server::control_flush_with_freeze(&config().await?, id, mount, false, freeze).await?;
+        server::control_flush_with_freeze(&config().await?.0, id, mount, false, freeze).await?;
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
-    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)?;
+    super::output(&value, &flushed.manifest_id.to_string(), json)?;
     Ok(())
 }

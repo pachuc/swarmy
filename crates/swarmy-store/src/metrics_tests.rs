@@ -57,6 +57,7 @@ fn unbounded_turn_keeps_every_row_and_derives_idle() {
         },
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
+        computer: None,
     };
     let event = |stage: TurnStage, request: Option<swarmy_core::RequestId>, ns: i128| TurnEvent {
         session_id: session,
@@ -200,11 +201,13 @@ fn batched_patches_equal_sequential_writes() {
         summary: StoredTurnSummaryCurrent::default(),
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
+        computer: None,
     };
     let mut sequential = TurnWrite {
         summary: StoredTurnSummaryCurrent::default(),
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
+        computer: None,
     };
     for (index, name) in ["a", "b", "c"].iter().enumerate() {
         let request = swarmy_core::RequestId::for_step(session, u64::try_from(index).unwrap() + 1);
@@ -227,4 +230,84 @@ fn batched_patches_equal_sequential_writes() {
     }
     assert_eq!(batched.tools, sequential.tools);
     assert_eq!(batched.tools.len(), 3);
+}
+
+fn timing_state() -> TurnWrite {
+    TurnWrite {
+        summary: StoredTurnSummaryCurrent::default(),
+        inference: BTreeMap::new(),
+        tools: BTreeMap::new(),
+        computer: None,
+    }
+}
+#[test]
+fn node_and_worker_stamps_merge_into_one_tool_row() {
+    let mut state = timing_state();
+    for patch in [
+        ToolMetric {
+            request_id: "call".into(),
+            delivered_ns: Some(1),
+            claimed_ns: Some(2),
+            started_ns: Some(3),
+            process_wall_ms: Some(0.5),
+            ..Default::default()
+        },
+        ToolMetric {
+            request_id: "call".into(),
+            woken_ns: Some(9),
+            ..Default::default()
+        },
+        ToolMetric {
+            request_id: "call".into(),
+            ..Default::default()
+        },
+    ] {
+        apply_one(&mut state, &MetricPatch::Tool(patch));
+    }
+    let row = &state.tools["call"];
+    assert_eq!(
+        (
+            row.delivered_ns,
+            row.claimed_ns,
+            row.started_ns,
+            row.process_wall_ms,
+            row.woken_ns
+        ),
+        (Some(1), Some(2), Some(3), Some(0.5), Some(9))
+    );
+}
+#[test]
+fn boot_split_survives_the_first_tool_resample() {
+    let mut state = timing_state();
+    apply_one(
+        &mut state,
+        &MetricPatch::Computer(crate::metrics_model::ComputerMetric {
+            open_ms: Some(4.0),
+            boot_ms: Some(6.0),
+            ..Default::default()
+        }),
+    );
+    apply_one(
+        &mut state,
+        &MetricPatch::Computer(crate::metrics_model::ComputerMetric::default()),
+    );
+    let row = state.computer.unwrap();
+    assert_eq!((row.open_ms, row.boot_ms), (Some(4.0), Some(6.0)));
+}
+
+#[test]
+fn first_prefetch_metric_wins() {
+    let mut state = timing_state();
+    for (bytes, ms) in [(10, 2.5), (20, 5.0)] {
+        apply_one(
+            &mut state,
+            &MetricPatch::Computer(crate::metrics_model::ComputerMetric {
+                prefetch_bytes: Some(bytes),
+                prefetch_ms: Some(ms),
+                ..Default::default()
+            }),
+        );
+    }
+    let row = state.computer.unwrap();
+    assert_eq!((row.prefetch_bytes, row.prefetch_ms), (Some(10), Some(2.5)));
 }

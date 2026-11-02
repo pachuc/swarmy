@@ -53,6 +53,9 @@ pub(crate) fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
         request_id: value.request_id,
         name: value.name,
         dispatched_ns: value.dispatched_ns,
+        delivered_ns: value.delivered_ns,
+        claimed_ns: value.claimed_ns,
+        woken_ns: value.woken_ns,
         started_ns: value.started_ns,
         completed_ns: value.completed_ns,
         exit_status: value.exit_status,
@@ -75,6 +78,10 @@ pub(crate) fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerM
         first_tool_bytes_fetched: value.first_tool_bytes_fetched,
         first_tool_fetch_p50_ms: value.first_tool_fetch_p50_ms,
         first_tool_fetch_p95_ms: value.first_tool_fetch_p95_ms,
+        open_ms: value.open_ms,
+        boot_ms: value.boot_ms,
+        prefetch_bytes: value.prefetch_bytes,
+        prefetch_ms: value.prefetch_ms,
     }
 }
 
@@ -149,6 +156,12 @@ pub(crate) fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
         main_session_id: record.main_session.map(|value| value.to_string()),
         route: record.route,
         requirements: requirements(record.requirements),
+        allow_gpu_request: record.allow_gpu_request,
+        gpu_request: record.gpu_request.map(|r| api::GpuRequestView {
+            reason: r.reason,
+            requested_at: r.requested_at.to_string(),
+            session_id: r.session_id.map(|id| id.to_string()),
+        }),
         node_id: None,
         scratch: None,
         session_count: None,
@@ -207,14 +220,34 @@ pub(crate) fn session(record: &swarmy_core::SessionRecord) -> api::Session {
 
 #[must_use]
 pub(crate) fn requirements(value: swarmy_core::SandboxRequirements) -> api::SandboxRequirements {
-    let gpu = match value.gpu {
-        swarmy_core::GpuRequirement::None => api::GpuMode::None,
-        swarmy_core::GpuRequirement::Shared => api::GpuMode::Shared,
-        swarmy_core::GpuRequirement::Dedicated => api::GpuMode::Dedicated,
-    };
+    let gpu = gpu_mode(value.gpu);
     api::SandboxRequirements {
         memory_mib: value.memory_mib,
         gpu,
+    }
+}
+
+pub(crate) fn gpu_mode(value: swarmy_core::GpuRequirement) -> api::GpuMode {
+    match value {
+        swarmy_core::GpuRequirement::None => api::GpuMode::None,
+        swarmy_core::GpuRequirement::Shared => api::GpuMode::Shared,
+        swarmy_core::GpuRequirement::Dedicated => api::GpuMode::Dedicated,
+    }
+}
+
+pub(crate) fn gpu_cards(value: &swarmy_core::GpuCards) -> api::GpuCards {
+    api::GpuCards {
+        model: value.model.clone(),
+        memory_mib: value.memory_mib,
+        count: value.count,
+    }
+}
+
+pub(crate) fn placement(value: &swarmy_core::PlacementRecord) -> api::PlacementView {
+    api::PlacementView {
+        node_id: value.node_id.to_string(),
+        epoch: value.epoch,
+        gpu: gpu_mode(value.gpu),
     }
 }
 
@@ -257,6 +290,7 @@ pub(crate) fn service_role(value: &store::ServiceRole) -> api::ServiceRole {
         store::ServiceRole::Gateway => api::ServiceRole::Gateway,
         store::ServiceRole::Api => api::ServiceRole::Api,
         store::ServiceRole::Node => api::ServiceRole::Node,
+        store::ServiceRole::NodeApi => api::ServiceRole::NodeApi,
     }
 }
 
@@ -295,6 +329,9 @@ pub(crate) fn credential(value: store::credentials::CredentialSummary) -> api::C
             swarmy_core::CredentialEntryKind::Subscription => api::CredentialKind::Subscription,
             swarmy_core::CredentialEntryKind::ApiKey => api::CredentialKind::ApiKey,
             swarmy_core::CredentialEntryKind::Cloud => api::CredentialKind::Cloud,
+            swarmy_core::CredentialEntryKind::MachineProvider => {
+                api::CredentialKind::MachineProvider
+            }
         },
         label: value.label,
         status: match value.status {
@@ -492,15 +529,15 @@ pub(crate) async fn populate_session_detail(
     record: &swarmy_core::SessionRecord,
     agent: Option<&swarmy_core::AgentRecord>,
 ) -> Result<(), ApiFailure> {
-    if let Some(wait) = state
+    if let Some((wait, shortfall)) = state
         .store
-        .inference_wait(record.session_id)
+        .session_wait_detail(record.session_id)
         .await
         .map_err(storage)?
     {
         result.waiting = Some(api::WaitingReason {
             wake_at: Some(wait.wake_at.to_string()),
-            reasons: wait.reasons,
+            reasons: wait.reasons(shortfall),
         });
     }
     let usage = state
@@ -563,10 +600,7 @@ pub(crate) async fn populate_session_detail(
             .await
             .map_err(storage)?
             .map(|address| address.to_string());
-        result.placement = Some(api::PlacementView {
-            node_id: placement.node_id.to_string(),
-            epoch: placement.epoch,
-        });
+        result.placement = Some(self::placement(placement));
     }
     Ok(())
 }
@@ -644,10 +678,7 @@ async fn populate_agent_detail(
             .map(|address| address.to_string()),
         None => None,
     };
-    view.placement = placement.as_ref().map(|value| api::PlacementView {
-        node_id: value.node_id.to_string(),
-        epoch: value.epoch,
-    });
+    view.placement = placement.as_ref().map(self::placement);
     let volume = state
         .store
         .get_volume(swarmy_core::VolumeId::from_ulid(agent_id.as_ulid()))
@@ -709,6 +740,135 @@ async fn populate_agent_detail(
     Ok(())
 }
 
+/// One snapshot clock and agent-name cache shared by all machine views.
+pub(crate) struct MachineContext<'a> {
+    pub as_of: Timestamp,
+    pub window: Option<(Timestamp, Timestamp)>,
+    pub names: &'a std::collections::HashMap<swarmy_core::AgentId, Option<String>>,
+}
+fn stamp(value: Option<Timestamp>) -> Option<String> {
+    value.map(|at| at.to_string())
+}
+#[must_use]
+pub(crate) fn machine_view(
+    record: &swarmy_core::MachineRecord,
+    open: &[swarmy_core::MachineAssignment],
+    context: &MachineContext<'_>,
+) -> api::Machine {
+    let cost_micros = record.cost_micros(context.as_of);
+    let window_cost_micros = context
+        .window
+        .map(|(from, to)| record.cost_micros_between(from, to, context.as_of));
+    api::Machine {
+        id: record.machine_id.to_string(),
+        group: record.group.clone(),
+        name: record.name.clone(),
+        module: record.module.clone(),
+        size: record.size.clone(),
+        location: record.location.clone(),
+        address: record.address.clone(),
+        node_id: record.node_id.map(|id| id.to_string()),
+        state: match record.state {
+            swarmy_core::MachineState::Requested => api::MachineState::Requested,
+            swarmy_core::MachineState::Creating => api::MachineState::Creating,
+            swarmy_core::MachineState::Provisioning => api::MachineState::Provisioning,
+            swarmy_core::MachineState::Joined => api::MachineState::Joined,
+            swarmy_core::MachineState::Draining => api::MachineState::Draining,
+            swarmy_core::MachineState::Destroyed => api::MachineState::Destroyed,
+            swarmy_core::MachineState::Failed => api::MachineState::Failed,
+            swarmy_core::MachineState::Orphaned => api::MachineState::Orphaned,
+        },
+        requested_at: record.requested_at.to_string(),
+        created_at: stamp(record.created_at),
+        provisioned_at: stamp(record.provisioned_at),
+        joined_at: stamp(record.joined_at),
+        drain_requested_at: stamp(record.drain_requested_at),
+        destroyed_at: stamp(record.destroyed_at),
+        cause: api::MachineCause {
+            agent_id: record.cause.agent.map(|id| id.to_string()),
+            agent_name: record
+                .cause
+                .agent
+                .and_then(|id| context.names.get(&id).cloned().flatten()),
+            session_id: record.cause.session.map(|id| id.to_string()),
+            reason: record.cause.reason.clone(),
+        },
+        hourly_price_micros: record.hourly_price.micros,
+        currency: record.hourly_price.currency.clone(),
+        billing: match record.billing {
+            swarmy_core::BillingGranularity::PerStartedHour => {
+                api::BillingGranularity::PerStartedHour
+            }
+            swarmy_core::BillingGranularity::PerStartedMinute => {
+                api::BillingGranularity::PerStartedMinute
+            }
+        },
+        failure: record.failure.clone(),
+        cost_micros,
+        cost: swarmy_core::format_micros(cost_micros),
+        window_cost_micros,
+        window_cost: window_cost_micros.map(swarmy_core::format_micros),
+        current_agents: open
+            .iter()
+            .map(|assignment| api::MachineAgent {
+                agent_id: assignment.agent.to_string(),
+                agent_name: context.names.get(&assignment.agent).cloned().flatten(),
+                since: assignment.from.to_string(),
+            })
+            .collect(),
+    }
+}
+#[must_use]
+pub(crate) fn machine_totals(machines: &[api::Machine]) -> Vec<api::MachineCostTotal> {
+    let mut totals = std::collections::BTreeMap::<String, u64>::new();
+    for machine in machines {
+        let value = totals.entry(machine.currency.clone()).or_default();
+        *value = value.saturating_add(machine.window_cost_micros.unwrap_or(machine.cost_micros));
+    }
+    totals
+        .into_iter()
+        .map(|(currency, cost_micros)| api::MachineCostTotal {
+            currency,
+            cost_micros,
+            cost: swarmy_core::format_micros(cost_micros),
+        })
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn elastic_group(
+    record: &swarmy_core::ElasticGroupRecord,
+    node_memory_mib: Option<u64>,
+) -> api::ElasticGroup {
+    let definition = &record.definition;
+    api::ElasticGroup {
+        swarm: definition.swarm.clone(),
+        group: definition.group.clone(),
+        module: definition.module.clone(),
+        size: definition.size.clone(),
+        location: definition.location.clone(),
+        sandboxes: definition.sandboxes,
+        local_storage: definition.local_storage.clone(),
+        max: definition.max,
+        autoscale: definition.autoscale,
+        price_per_hour: definition.hourly_price.amount(),
+        currency: definition.hourly_price.currency.clone(),
+        desired: record.desired,
+        desired_reason: record.desired_cause.reason.clone(),
+        desired_agent: record.desired_cause.agent.map(|a| a.to_string()),
+        desired_session: record.desired_cause.session.map(|s| s.to_string()),
+        applied: record.applied,
+        generation: record.generation,
+        reconciled_generation: record.reconciled_generation,
+        settled: record.settled(),
+        updated_at: record.updated_at.to_string(),
+        external_bucket: definition.external_bucket,
+        network_id: definition.network_id.clone(),
+        image: definition.image.clone(),
+        node_memory_mib,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
@@ -760,6 +920,9 @@ mod tests {
                 request_id: "c".into(),
                 name: "bash".into(),
                 dispatched_ns: Some(1),
+                delivered_ns: Some(11),
+                claimed_ns: Some(12),
+                woken_ns: Some(13),
                 started_ns: Some(2),
                 completed_ns: Some(3),
                 exit_status: Some(0),
@@ -778,6 +941,10 @@ mod tests {
                 first_tool_bytes_fetched: Some(6),
                 first_tool_fetch_p50_ms: Some(7.5),
                 first_tool_fetch_p95_ms: Some(8.5),
+                open_ms: Some(1.25),
+                boot_ms: Some(1.75),
+                prefetch_bytes: Some(10),
+                prefetch_ms: Some(2.5),
             }),
             append_to_first_token_ms: Some(9.5),
             inference_duration_ms: Some(10.5),
@@ -823,6 +990,9 @@ mod tests {
                     "request_id": "c",
                     "name": "bash",
                     "dispatched_ns": 1,
+                    "delivered_ns": 11,
+                    "claimed_ns": 12,
+                    "woken_ns": 13,
                     "started_ns": 2,
                     "completed_ns": 3,
                     "exit_status": 0,
@@ -841,6 +1011,10 @@ mod tests {
                     "first_tool_bytes_fetched": 6,
                     "first_tool_fetch_p50_ms": 7.5,
                     "first_tool_fetch_p95_ms": 8.5,
+                    "open_ms": 1.25,
+                    "boot_ms": 1.75,
+                    "prefetch_bytes": 10,
+                    "prefetch_ms": 2.5,
                 },
                 "append_to_first_token_ms": 9.5,
                 "inference_duration_ms": 10.5,

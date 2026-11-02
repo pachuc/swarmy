@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     fmt::Write as FmtWrite,
     io::{Read, Write},
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
 };
 use swarmy_core::ignore_best_effort;
@@ -324,6 +325,9 @@ struct Services {
     files: tempfile::TempDir,
     children: Vec<tokio::process::Child>,
     bin: PathBuf,
+    node_api_listen: String,
+    /// The sandbox node for root tests; stopped before every other service.
+    node: Option<Node>,
 }
 
 impl Services {
@@ -340,8 +344,10 @@ impl Services {
             files,
             children: Vec::new(),
             bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
+            node_api_listen: free_node_api_listen(),
+            node: None,
         };
-        for name in ["scheduler", "worker", "gateway"] {
+        for name in ["scheduler", "worker", "gateway", "node-api"] {
             services.launch(fixture, name);
         }
         wait_for_scheduler(fixture).await;
@@ -361,6 +367,7 @@ impl Services {
         command
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
             .env("SWARMY_NATS_URL", &fixture.url)
+            .env("SWARMY_NODE_API_LISTEN", &self.node_api_listen)
             .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
             .env("SWARMY_BUS_PREFIX", &fixture.prefix)
             .env("SWARMY_PROVIDER", "fake")
@@ -379,12 +386,22 @@ impl Services {
         self.children.push(command.spawn().unwrap());
     }
 
+    /// Stop the node first, waiting for its graceful exit, then the other
+    /// services in reverse start order, so the node never shuts down against
+    /// a stopped node API. Safe to call twice.
+    fn stop_all(&mut self) {
+        drop(self.node.take());
+        for child in self.children.iter_mut().rev() {
+            ignore_best_effort(child.start_kill(), "kill service child");
+        }
+    }
+
     /// Last twenty lines of each service log for timeout diagnostics. Lines
     /// are truncated to 500 characters: some startup lines embed hundreds of
     /// partition ids and would otherwise flood the failure output.
     fn log_tails(&self) -> String {
         let mut tails = String::new();
-        for name in ["scheduler", "worker", "gateway"] {
+        for name in ["scheduler", "worker", "gateway", "node-api"] {
             ignore_best_effort(
                 writeln!(tails, "--- {name}.log (last 20 lines) ---"),
                 "append log tail line",
@@ -418,6 +435,12 @@ impl Services {
             }
         }
         tails
+    }
+}
+
+impl Drop for Services {
+    fn drop(&mut self) {
+        self.stop_all();
     }
 }
 
@@ -670,9 +693,6 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         assert!(screen.contains(&id.to_string()));
         terminal.type_text("\x1b");
         terminal.exit(true).await;
-        for child in &mut services.children {
-            ignore_best_effort(child.kill().await, "kill child process");
-        }
     })
     .await;
 }
@@ -1006,7 +1026,7 @@ async fn root_chat_default_image_executes_pwd() {
         return;
     };
     run(|fixture| async move {
-        let (services, _node) = root_services(&fixture, &image, r#"{
+        let services = root_services(&fixture, &image, r#"{
             "request_based": {"steps": 2, "tool_steps": [0], "bash_command": "pwd", "final_answer": "pwd completed"}
         }"#).await;
         let manifest = fixture.store.get_image("fixture", &swarmy_core::ImageTag("test".into())).await.unwrap().unwrap();
@@ -1075,7 +1095,7 @@ fn check_pwd_output(result: &ToolResult) {
     assert!(!result.timed_out);
 }
 
-async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {
+async fn root_services(fixture: &Fixture, image: &str, script: &str) -> Services {
     // The image registry lives under the stack's store directory, never the
     // host configuration: build settings from the test environment.
     let settings =
@@ -1120,18 +1140,30 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
         files,
         children: Vec::new(),
         bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
+        node_api_listen: free_node_api_listen(),
+        node: None,
     };
-    for name in ["scheduler", "worker", "gateway"] {
+    for name in ["scheduler", "worker", "gateway", "node-api"] {
         services.launch(fixture, name);
     }
     wait_for_scheduler(fixture).await;
+    let id = swarmy_core::NodeId::from_ulid(Ulid::generate());
+    let token = fixture.store.issue_node_credential(id).await.unwrap();
+    let token_file = services.files.path().join("node-token");
+    std::fs::write(&token_file, format!("{}\n", token.reveal())).unwrap();
+    std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600)).unwrap();
     let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
     let node = Node {
         root: services.files.path().join(".swarmy/node"),
-        child: std::process::Command::new(services.bin.join("swarmy-core"))
-            .arg("node")
+        child: std::process::Command::new(swarmy_testkit::bin("swarmy-node"))
             .current_dir(services.files.path())
             .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
+            .env("SWARMY_NODE_ID", id.to_string())
+            .env(
+                "SWARMY_NODE_API_URL",
+                format!("http://{}", services.node_api_listen),
+            )
+            .env("SWARMY_NODE_TOKEN_FILE", &token_file)
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
             .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
             .env("SWARMY_BUS_PREFIX", &fixture.prefix)
@@ -1143,8 +1175,14 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
             .unwrap(),
     };
 
-    (services, node)
+    services.node = Some(node);
+    services
 }
 
 #[path = "chat_named.rs"]
 mod named;
+
+fn free_node_api_listen() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().to_string()
+}

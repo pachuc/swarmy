@@ -93,7 +93,7 @@ impl Fixture {
             .set_len(64 * 1024 * 1024)
             .unwrap();
         system("mkfs.ext4", &["-F", "-q", raw.to_str().unwrap()]);
-        let objects = swarmy_store::objects::from_settings(settings).unwrap();
+        let objects = swarmy_volume::objects::from_settings(settings).unwrap();
         let image = swarmy_volume::image::upload_image(&raw, objects)
             .await
             .unwrap();

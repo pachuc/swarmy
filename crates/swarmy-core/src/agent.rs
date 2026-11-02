@@ -4,6 +4,16 @@ use crate::{
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+/// Why the agent has its current shared or dedicated GPU requirement.
+/// `request_gpu` records the calling session; an operator's `--gpu-reason` records none.
+/// The mode is `requirements.gpu`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuRequest {
+    pub reason: String,
+    pub requested_at: Timestamp,
+    pub session_id: Option<SessionId>,
+}
+
 /// Public identity and immutable image selection for its computer.
 /// The private `github_token` field lives in a `FoundationDB` side row and is
 /// accessed separately so serialization and diagnostics cannot disclose it.
@@ -30,6 +40,13 @@ pub struct AgentRecord {
     /// Failover chain for this agent's turns. `None` inherits the swarm default.
     #[serde(default)]
     pub route: Option<String>,
+    /// Whether the agent may change its own GPU requirement with `request_gpu` and `release_gpu`.
+    #[serde(default)]
+    pub allow_gpu_request: bool,
+    /// Set by `request_gpu` or by an operator GPU change with a reason; cleared by
+    /// `release_gpu` and by an operator GPU change without one.
+    #[serde(default)]
+    pub gpu_request: Option<GpuRequest>,
 }
 
 /// Optional inference overrides. Omitted fields inherit the stack defaults on create
@@ -43,6 +60,10 @@ pub struct AgentSettings {
     pub memory_mib: Option<u64>,
     pub gpu: Option<GpuRequirement>,
     pub route: Option<String>,
+    pub allow_gpu_request: Option<bool>,
+    /// Recorded as `gpu_request` with no session; only valid with a shared or
+    /// dedicated `gpu` in the same settings.
+    pub gpu_reason: Option<crate::GpuReason>,
 }
 
 impl AgentRecord {
@@ -57,8 +78,29 @@ impl AgentRecord {
 }
 
 impl AgentSettings {
+    /// The GPU request an operator's reason records: only with a shared or
+    /// dedicated requirement, and with no session because no tool call made it.
+    #[must_use]
+    pub fn operator_gpu_request(&self, now: Timestamp) -> Option<GpuRequest> {
+        let reason = self.gpu_reason.as_ref()?;
+        matches!(
+            self.gpu,
+            Some(GpuRequirement::Shared | GpuRequirement::Dedicated)
+        )
+        .then(|| GpuRequest {
+            reason: reason.as_str().to_owned(),
+            requested_at: now,
+            session_id: None,
+        })
+    }
+
     /// Apply only supplied settings, after clearing explicitly reset fields.
-    pub fn apply_to(&self, agent: &mut AgentRecord, resets: &[crate::InferenceField]) {
+    pub fn apply_to(
+        &self,
+        agent: &mut AgentRecord,
+        resets: &[crate::InferenceField],
+        now: Timestamp,
+    ) {
         for field in resets {
             match field {
                 crate::InferenceField::Provider => agent.provider = None,
@@ -83,7 +125,15 @@ impl AgentSettings {
             agent.requirements.memory_mib = memory;
         }
         if let Some(gpu) = self.gpu {
+            if let Some(request) = self.operator_gpu_request(now) {
+                agent.gpu_request = Some(request);
+            } else if gpu != agent.requirements.gpu {
+                agent.gpu_request = None;
+            }
             agent.requirements.gpu = gpu;
+        }
+        if let Some(allow) = self.allow_gpu_request {
+            agent.allow_gpu_request = allow;
         }
         if let Some(effort) = self.reasoning_effort {
             agent.reasoning_effort = Some(effort);

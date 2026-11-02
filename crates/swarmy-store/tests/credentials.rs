@@ -770,3 +770,34 @@ async fn breaker_snapshot_matches_the_gateway_pool_without_decrypting() {
     assert_eq!(pool.len(), 1);
     assert_eq!(pool[0].key, CredentialKey::entry("xai", "default"));
 }
+
+#[tokio::test]
+async fn machine_provider_round_trips_and_lists() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    let env = [("HCLOUD_TOKEN".into(), "test-value".into())].into();
+    let record = CredentialRecord {
+        kind: CredentialKind::MachineProvider { env },
+        bookkeeping: swarmy_core::CredentialBookkeeping {
+            label: Some("default".into()),
+            ..Default::default()
+        },
+        updated_at: Timestamp::now(),
+    };
+    f.credentials
+        .put_entry(SCOPE, "hetzner-cloud", "default", &record)
+        .await
+        .unwrap();
+    let got = f
+        .credentials
+        .get_entry(SCOPE, "hetzner-cloud", "default")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(got.kind, CredentialKind::MachineProvider { .. }));
+    assert_eq!(
+        f.credentials.list_entries(SCOPE).await.unwrap()[0].kind,
+        CredentialEntryKind::MachineProvider
+    );
+}

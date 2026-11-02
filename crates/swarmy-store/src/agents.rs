@@ -39,6 +39,7 @@ impl Store {
         let github_token = options.github_token;
         let replay_key = options.replay_key;
         validate_github_token(github_token)?;
+        validate_gpu_reason(settings)?;
         if name.is_empty() || name.chars().any(char::is_control) {
             return Err(StoreError::Domain(crate::DomainError::InvalidAgentName));
         }
@@ -93,6 +94,8 @@ impl Store {
                     reasoning_effort: settings.reasoning_effort,
                     provider: settings.provider.clone(),
                     route: settings.route.clone(),
+                    allow_gpu_request: settings.allow_gpu_request.unwrap_or(false),
+                    gpu_request: settings.operator_gpu_request(now),
                     requirements: swarmy_core::SandboxRequirements {
                         memory_mib: settings.memory_mib.or(default_memory).unwrap_or(768),
                         gpu: settings.gpu.unwrap_or_default(),
@@ -204,7 +207,8 @@ impl Store {
         .await
     }
 
-    /// Apply overrides and explicit resets in the same transaction.
+    /// Apply overrides and explicit resets in the same transaction. A GPU
+    /// change requests a placed computer release; a memory change still needs eviction.
     /// # Errors
     /// Rejects unknown agents, missing routes, oversized records, and storage failures.
     pub async fn set_agent_with_resets(
@@ -213,6 +217,7 @@ impl Store {
         settings: &AgentSettings,
         resets: &[swarmy_core::InferenceField],
     ) -> Result<AgentRecord> {
+        validate_gpu_reason(settings)?;
         if let Some(name) = settings.route.as_deref() {
             // Fail fast outside the write transaction; the transaction below
             // rechecks so a concurrent deletion cannot slip through.
@@ -220,6 +225,7 @@ impl Store {
                 return Err(StoreError::Domain(crate::DomainError::RouteMissing));
             }
         }
+        let now = self.now();
         self.transaction(|trx| async move {
             let mut agent = self
                 .read_agent(&trx, id)
@@ -233,20 +239,37 @@ impl Store {
                 return Err(StoreError::Domain(crate::DomainError::RouteMissing));
             }
             let previous_requirements = agent.requirements;
-            settings.apply_to(&mut agent, resets);
-            if agent.requirements != previous_requirements
-                && read::<swarmy_core::PlacementRecord>(&trx, &self.keys().placement(id))
-                    .await?
-                    .is_some()
-            {
+            settings.apply_to(&mut agent, resets, now);
+            self.write_agent_requirements_in(&trx, &agent, previous_requirements)
+                .await?;
+            Ok(agent)
+        })
+        .await
+    }
+
+    /// Write an agent whose sandbox requirements may differ from `previous`. A GPU
+    /// change asks the hosting node to release a placed computer; a memory change is
+    /// refused while the computer is placed. Agent settings and the GPU tools both
+    /// write through here so a requirement change has one implementation.
+    pub(crate) async fn write_agent_requirements_in(
+        &self,
+        trx: &Transaction,
+        agent: &AgentRecord,
+        previous: swarmy_core::SandboxRequirements,
+    ) -> Result<()> {
+        if agent.requirements != previous
+            && read::<swarmy_core::PlacementRecord>(trx, &self.keys().placement(agent.agent_id))
+                .await?
+                .is_some()
+        {
+            if agent.requirements.memory_mib != previous.memory_mib {
                 return Err(StoreError::Domain(
                     crate::DomainError::ActiveSandboxRequirements,
                 ));
             }
-            write(&trx, &self.keys().agent(id), &agent)?;
-            Ok(agent)
-        })
-        .await
+            self.request_release_in(trx, agent.agent_id).await?;
+        }
+        write(trx, &self.keys().agent(agent.agent_id), agent)
     }
 
     /// Delete the identity and its computer atomically, retaining its sessions.
@@ -825,6 +848,19 @@ impl Store {
     }
 }
 
+/// A reason describes a card requirement, so it must arrive with one.
+fn validate_gpu_reason(settings: &AgentSettings) -> Result<()> {
+    if settings.gpu_reason.is_some()
+        && !matches!(
+            settings.gpu,
+            Some(swarmy_core::GpuRequirement::Shared | swarmy_core::GpuRequirement::Dedicated)
+        )
+    {
+        return Err(StoreError::Domain(crate::DomainError::GpuReasonWithoutCard));
+    }
+    Ok(())
+}
+
 fn validate_github_token(token: Option<&str>) -> Result<()> {
     if token.is_some_and(|token| {
         token.is_empty() || token.len() > 4096 || !token.bytes().all(|byte| byte.is_ascii_graphic())
@@ -870,6 +906,8 @@ mod tests {
             provider: None,
             route: None,
             requirements: swarmy_core::SandboxRequirements::default(),
+            allow_gpu_request: false,
+            gpu_request: None,
         };
         let bytes = encode(&record).unwrap();
         assert_eq!(
@@ -880,9 +918,29 @@ mod tests {
                 101, 4, 116, 101, 115, 116, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
                 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 0, 20, 49, 57, 55, 48, 45, 48,
                 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0, 0, 0, 0, 0, 128, 6, 0,
-                0
+                0, 0, 0
             ]
         );
         assert_eq!(decode::<AgentRecord>(&bytes).unwrap(), record);
+        let mut requested = record;
+        requested.allow_gpu_request = true;
+        requested.gpu_request = Some(swarmy_core::GpuRequest {
+            reason: "r".into(),
+            requested_at: Timestamp::UNIX_EPOCH,
+            session_id: Some(SessionId::from_ulid(ulid::Ulid::from(0_u128))),
+        });
+        let encoded = encode(&requested).unwrap();
+        assert_eq!(decode::<AgentRecord>(&encoded).unwrap(), requested);
+        // Postcard places the timestamp and session ID after the reason, so
+        // these bytes start the appended fields rather than ending the record.
+        assert_eq!(&encoded[bytes.len() - 2..bytes.len() + 2], [1, 1, 1, 114]);
+        // A request with a session ends with the Some tag, the id length and the
+        // 26-character id; an operator request ends with the None tag.
+        assert_eq!(&encoded[encoded.len() - 28..encoded.len() - 26], [1, 26]);
+        let mut operator = requested;
+        operator.gpu_request.as_mut().unwrap().session_id = None;
+        let operator_bytes = encode(&operator).unwrap();
+        assert_eq!(decode::<AgentRecord>(&operator_bytes).unwrap(), operator);
+        assert_eq!(operator_bytes.last(), Some(&0));
     }
 }

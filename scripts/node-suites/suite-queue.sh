@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: suite-queue.sh [--at COMMIT] [--ci | --plus | --node | --chaos | --only "PACKAGE TEST"] BRANCH...
+# Usage: suite-queue.sh [--at COMMIT] [--ci | --plus | --node | --chaos | --latency | --only "PACKAGE TEST"] BRANCH...
 #   --ci     ci-local.sh: every CI job's commands, for validating a batch
 #            branch without a GitHub run
 #   default  root-suites.sh (node suite, three chaos suites, chaos-ci)
@@ -7,6 +7,7 @@
 #   --node   the node suite alone
 #   --chaos  the three chaos suites and chaos-ci, for worker, scheduler, and
 #            gateway changes that do not touch the node
+#   --latency latency.sh: sandbox start and first tool call at 175 ms and 400 ms round trip
 #   --only   one suite; chaos suites run through root-suites.sh, which serves
 #            the API they need, and others through rerun-suite.sh with full output
 #   --at     test this commit instead of the branch head at the time the run
@@ -26,6 +27,7 @@ case "${1:-}" in
   --plus) mode=plus; shift ;;
   --node) mode=node; shift ;;
   --chaos) mode=chaos; shift ;;
+  --latency) mode=latency; shift ;;
   --only) mode=only; only=$2; shift 2 ;;
 esac
 mkdir -p ~/suite-logs
@@ -44,6 +46,7 @@ for branch in "$@"; do
       ci) bash "$here/ci-local.sh" "$branch" ;;
       plus) bash "$here/root-suites-plus.sh" "$branch" ;;
       node) SUITES="swarmyd --test node" bash "$here/root-suites.sh" "$branch" ;;
+      latency) bash "$here/latency.sh" "$branch" ;;
       chaos) SUITES="swarmy-chaos --test bash,swarmy-chaos --test continuity,swarmy-chaos --test coding" bash "$here/root-suites.sh" "$branch" ;;
       only)
         set -- $only

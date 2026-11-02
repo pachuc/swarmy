@@ -19,7 +19,8 @@ configuration at `.swarmy/config.toml`:
 
 Scripts match the client binary. Rebuild a development client after editing a
 script. Do not delete `.swarmy/` or `.dev/` when clearing unused checkout files.
-The node's binaries and scripts are
+The core release bundle carries `swarmy-node` alongside the stack binaries.
+Node-only hosts install only `swarmy-node` from it and hold neither the FoundationDB library nor a cluster file. The node's binaries and scripts are
 copied from a checkout for development builds, or fetched from the matching
 release for release builds. `SWARMY_RELEASE_BASE_URL` overrides the release
 archive source. Systemd is the Linux service manager that starts and
@@ -31,10 +32,29 @@ and systemd unit files in private node state. On a stack+services host, the unit
 | `swarmy-stack` | FoundationDB, NATS, object store |
 | `swarmyd` | Sandbox node |
 | `swarmy-api` | Control plane API |
+| `swarmy-node-api` | Authenticated node API on the stack host |
 | `swarmy-scheduler` | Scheduling |
 | `swarmy-worker` | Step execution |
 | `swarmy-gateway` | Inference gateway |
-| `swarmy-tunnel` | Host tunnel endpoint |
+| `swarmy-provisioner` | Elastic machine groups; primary only |
+| `swarmy-tunnel` | Node API and NATS tunnel endpoint |
+| `swarmy-objects-tunnel` | Object-store tunnel; joining nodes of swarms without a bucket |
+
+The control tunnel forwards NATS (4222) and the node API (8743), but never FoundationDB. Without a bucket, a second SSH connection forwards object storage (8333). The node token is revoked
+when its host is removed.
+
+The swarmy-provisioner service runs OpenTofu for elastic groups on the primary.
+It keeps local state under `~<service-user>/.local/share/swarmy/provisioner/tofu/GROUP/`
+and group SSH keys under `~<service-user>/.local/share/swarmy/provisioner/keys/groups/`.
+SSH runs from the primary as the service user. Node tunnel keys are added to and
+removed from `~<service-user>/.ssh/authorized_keys` on the primary.
+A provisioner restart resumes interrupted joins. Follow joins in the same journal.
+After every apply it copies state to the private bucket at
+`tofu-state/GROUP/terraform.tfstate`. To recover after losing the local state,
+stop `swarmy-provisioner.service`, copy that object back to the local path,
+and start the unit. Follow it with `sudo journalctl -u swarmy-provisioner -f`.
+The creation interlock allows at most four machine creations per hour per swarm;
+a blocked group logs `creation limit reached` with the next available slot.
 
 ## Object storage permissions
 
@@ -98,20 +118,48 @@ directory with installed units can be restored with
 `swarmy swarm rm demo --force` forgets the local registration; it does not
 decommission hosts.
 
+On the stack host, down also removes the provisioner's working data under
+the service user's `~/.local/share/swarmy/provisioner` (each elastic group's
+OpenTofu directory, empty by then because down waits until every elastic
+group is at zero machines, and the group SSH keys) and its OpenTofu download
+cache, `~/.cache/swarmy/tofu`. The rest of the service user's home stays.
+
+Down removes the drop-in files provisioning wrote only while they start with
+the line `# Written by swarmy provisioning; swarmy swarm down removes this file.`:
+`/etc/modules-load.d/swarmy-provisioned.conf` and
+`/etc/ld.so.conf.d/swarmy-provisioned.conf`. A file at either path without that
+line belongs to the host: provisioning refuses to replace it and down leaves
+it. Hosts provisioned before October 30, 2026 may also keep
+`/etc/modules-load.d/swarmy.conf` and `/etc/ld.so.conf.d/swarmy.conf` from older
+provisioning. Down no longer removes those names, so delete them by hand if
+the host does not need them.
+
 ## Draining a node
 
 Before stopping a node, swarmy checks for running sandbox commands and
 turns. It waits for them to finish, then stops the node agent cleanly so
 computers checkpoint and release. Swarmy does not cordon the node (mark it
 unavailable for new work) before draining. See
-[scaling](swarms.md#scaling-node-groups) for timeouts and force.
+[scaling](swarms.md#scaling-node-groups) for timeouts and force. After the node
+agent stops, drain reports as unreleased every placement the store still
+records on the node. Those computers recover on another node from their last
+checkpoint when their leases expire.
 
 ## Host repair
 
+To check host configuration by hand, run
+`sudo sh -c 'cd ~swarmy/swarmy && set -a && . /etc/swarmy/node.env && set +a && /usr/local/bin/swarmy-node --check-config'`.
 Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
-matching client. The `units` list should include `swarmyd.service` and the
-installed service units. Check `systemctl cat swarmyd.service` for
-`ExecStart=/usr/local/bin/swarmy-core node`, and inspect
+matching client. The primary upgrades first because other nodes need its node
+API and credentials. A full upgrade issues missing node tokens, keeps the node
+API lines of `/etc/swarmy/node.env` current, restarts a node-only host's tunnel
+with its node. Node tokens are revoked when a host is removed.
+After a store wipe, delete `/etc/swarmy/node-token` on every host before
+upgrading to issue fresh tokens. Follow node API logs on the primary with
+`swarmy swarm logs NAME --unit swarmy-node-api`. The `units` list should
+include `swarmyd.service` and `swarmy-node-api.service` on a stack with services, along with the other
+service units. Check `systemctl cat swarmyd.service` for
+`ExecStart=/usr/local/bin/swarmy-node`, and inspect
 `ls /usr/local/bin`. Old binaries are removed once no installed unit refers
 to them. Do not use down to fix an upgrade: down removes the backing stack's
 data. If installed service settings do not match, inspect
@@ -130,18 +178,30 @@ primary use:
 cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION ENDPOINT PREFIX CONDITIONAL_CREATE STATIC_KEYS SANDBOXES SERVICE_USER LOCAL_STORAGE PREBUILT
 ```
 
+On the primary, provisioning enables `swarmyd` but leaves it stopped;
+`bash scripts/remote-services.sh SERVICE_USER` starts the services and node
+agent, then waits for the agent to register with the node API. A joining
+host starts and waits for its node agent during provisioning.
+
 `PREBUILT` is true for an uploaded release bundle; the service user defaults
 to `swarmy`. A joining host uses `node FIRST_HOST_PRIVATE_IP` followed by the
-same bucket and storage arguments. Its cluster file is copied from the
-primary, preserving cluster identity and loopback coordinator address. Node
+same bucket and storage arguments. A node-only host runs `swarmy-node` and
+holds no FoundationDB client, cluster file, or database credentials. Node
 add generates a dedicated tunnel key on the joining host, authorizes only
 service forwards on the primary, and pins the primary's host key through the
 authenticated provisioning connection. The key allows no interactive shell.
-The tunnel forwards local 4500 and 4222 to the primary's loopback ports and
-8333 when SeaweedFS is used. It starts before swarmyd and restarts after SSH
-failure; inspect it with `sudo journalctl -u swarmy-tunnel`. Tunnel identity
+The control tunnel forwards local 4222 and 8743 to the primary's loopback ports;
+8743 reaches the node API and its start check probes this port. When the primary serves SeaweedFS without a bucket, the objects tunnel forwards 8333 on a separate SSH connection, using the same key. It starts and stops with the control tunnel. The
+primary's tunnel key line permits 4222 and 8743, and permits 8333 only
+without a bucket. SSH checks the link every 5 seconds and restarts after three
+misses. Join issues each node's API token on the primary and copies it over
+SSH standard input to `/etc/swarmy/node-token` (root-owned, mode 0600). The
+stack host issues its own token during provisioning. Removing a node revokes
+its token together with its tunnel key. It starts before swarmyd and restarts after SSH
+failure; inspect it with `sudo journalctl -u swarmy-tunnel` and inspect object traffic with `sudo journalctl -u swarmy-objects-tunnel`. Tunnel identity
 and pinned host key live under `/etc/swarmy/`, readable only by the service
-user. Binaries install to `/usr/local/bin`.
+user. Binaries install to `/usr/local/bin`: the primary installs the client,
+core, node and provisioner binaries, while joining nodes install only `swarmy-node`.
 
 See [infra/README.md](../infra/README.md) for OpenTofu working directories.
 

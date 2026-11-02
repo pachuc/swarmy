@@ -18,6 +18,7 @@ use swarmy_config::{
 pub enum GroupKind {
     Module,
     Existing,
+    Elastic,
 }
 
 /// # Errors
@@ -48,6 +49,9 @@ pub fn check_scalable(spec: &SwarmSpec, group: &str) -> Result<GroupKind> {
             spec.name,
             spec.placement.nodes.join(", ")
         )));
+    }
+    if selected.elastic {
+        return Ok(GroupKind::Elastic);
     }
     match selected.module {
         Module::Existing => Ok(GroupKind::Existing),
@@ -112,6 +116,16 @@ pub fn preflight(
     count: u32,
 ) -> Result<(GroupKind, SwarmRecord)> {
     let kind = check_scalable(spec, group)?;
+    if kind == GroupKind::Elastic {
+        return Err(Error::other(format!(
+            "group \"{group}\" is elastic; the CLI scales it through the swarm's API"
+        )));
+    }
+    if count == 0 && kind == GroupKind::Existing {
+        return Err(Error::other(format!(
+            "group \"{group}\" lists existing hosts and cannot be scaled to zero; keep at least one host (only groups whose machines OpenTofu creates can have zero)"
+        )));
+    }
     let record = read_up_record(registry, spec)?;
     if kind == GroupKind::Existing && count as usize > record.hosts.get(group).map_or(0, Vec::len) {
         return Err(Error::other(format!(
@@ -384,9 +398,9 @@ async fn drain_all(
         .filter(|h| h.provisioned)
     {
         let node = as_machine(spec, victim);
-        if let Err(error) = host.revoke_tunnel(&node, &primary).await {
+        if let Err(error) = host.revoke_node_access(&node, &primary).await {
             cloud_err!(
-                "host {}: could not revoke its tunnel key on {} ({}); remove its line from ~{}/.ssh/authorized_keys there",
+                "host {}: could not revoke its tunnel key and node API credential on {} ({}); remove its line from ~{}/.ssh/authorized_keys there and run swarmy-core node-credential revoke with its node id",
                 node.name,
                 primary.name,
                 swarmy_core::error_chain(&error),
@@ -409,6 +423,9 @@ async fn shrink(
     match kind {
         GroupKind::Module => apply_lower(request, spec, record, before, report).await?,
         GroupKind::Existing => remove_existing(host, request, spec, record, before, report).await?,
+        GroupKind::Elastic => {
+            return Err(Error::other("elastic groups are scaled through the API"));
+        }
     }
     Ok(())
 }

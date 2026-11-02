@@ -60,43 +60,7 @@ impl InferenceMetric {
     }
 }
 
-/// One tool call's timing and result size.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ToolMetric {
-    pub request_id: String,
-    pub name: String,
-    pub dispatched_ns: Option<i64>,
-    pub started_ns: Option<i64>,
-    pub completed_ns: Option<i64>,
-    pub exit_status: Option<i32>,
-    pub output_bytes: Option<u64>,
-    pub queue_ms: Option<f64>,
-    pub process_wall_ms: Option<f64>,
-}
-
-/// Volume and placement counters sampled for the turn.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ComputerMetric {
-    pub placement_ms: Option<f64>,
-    pub cold: Option<bool>,
-    pub chunks_fetched: u64,
-    pub bytes_fetched: u64,
-    pub fetch_p50_ms: Option<f64>,
-    pub fetch_p95_ms: Option<f64>,
-    /// Volume counters re-sampled after the first tool call of the turn
-    /// completes.
-    #[serde(default)]
-    pub first_tool_chunks_fetched: Option<u64>,
-    /// Total bytes re-sampled after the first tool call completes.
-    #[serde(default)]
-    pub first_tool_bytes_fetched: Option<u64>,
-    /// Fetch p50 re-sampled after the first tool call completes.
-    #[serde(default)]
-    pub first_tool_fetch_p50_ms: Option<f64>,
-    /// Fetch p95 re-sampled after the first tool call completes.
-    #[serde(default)]
-    pub first_tool_fetch_p95_ms: Option<f64>,
-}
+pub use swarmy_core::{ComputerMetric, ToolMetric};
 
 /// One turn's assembled metrics, as read back from the summary and rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -225,11 +189,14 @@ pub enum MetricPatch {
     Tool(ToolMetric),
     Computer(ComputerMetric),
     Error(String),
-    Wait { request_id: String, kind: WaitKind },
+    Wait {
+        request_id: String,
+        kind: MetricWaitKind,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum WaitKind {
+pub enum MetricWaitKind {
     Retry,
     RateLimit,
     MissingGateway,
@@ -267,6 +234,9 @@ impl From<StoredToolMetricCurrent> for ToolMetric {
             request_id: value.request_id,
             name: value.name,
             dispatched_ns: value.dispatched_ns,
+            delivered_ns: value.delivered_ns,
+            claimed_ns: value.claimed_ns,
+            woken_ns: value.woken_ns,
             started_ns: value.started_ns,
             completed_ns: value.completed_ns,
             exit_status: value.exit_status,
@@ -357,10 +327,16 @@ fn derive_inference(row: &mut StoredTurnInferenceCurrent) {
         .and_then(|ms| InferenceMetric::tokens_per_second(metric.output_tokens, ms));
 }
 
-fn apply_computer(summary: &mut StoredTurnSummaryCurrent, value: &ComputerMetric) {
-    let current = summary.computer.get_or_insert_with(ComputerMetric::default);
+fn apply_computer(computer: &mut Option<ComputerMetric>, value: &ComputerMetric) {
+    let current = computer.get_or_insert_with(ComputerMetric::default);
     if value.placement_ms.is_some() {
         current.placement_ms = value.placement_ms;
+    }
+    if value.open_ms.is_some() {
+        current.open_ms = value.open_ms;
+    }
+    if value.boot_ms.is_some() {
+        current.boot_ms = value.boot_ms;
     }
     if value.cold.is_some() {
         current.cold = value.cold;
@@ -380,6 +356,12 @@ fn apply_computer(summary: &mut StoredTurnSummaryCurrent, value: &ComputerMetric
     // The boot sample arrives before the first tool runs; the re-sampled
     // first-tool counters arrive after. The first re-sample wins so later
     // tools do not overwrite what the first command observed.
+    if current.prefetch_bytes.is_none() {
+        current.prefetch_bytes = value.prefetch_bytes;
+    }
+    if current.prefetch_ms.is_none() {
+        current.prefetch_ms = value.prefetch_ms;
+    }
     if current.first_tool_chunks_fetched.is_none() {
         current.first_tool_chunks_fetched = value.first_tool_chunks_fetched;
     }
@@ -400,6 +382,8 @@ pub(crate) struct TurnWrite {
     pub(crate) summary: StoredTurnSummaryCurrent,
     pub(crate) inference: BTreeMap<String, StoredTurnInferenceCurrent>,
     pub(crate) tools: BTreeMap<String, StoredToolMetricCurrent>,
+    /// The node's sample row, loaded only when the batch touches it.
+    pub(crate) computer: Option<ComputerMetric>,
 }
 
 /// The detail rows one patch batch touches, so the transaction reads only
@@ -410,6 +394,7 @@ pub(crate) struct TouchedRows {
     pub(crate) inference: BTreeSet<String>,
     pub(crate) tools: BTreeSet<String>,
     pub(crate) has_wait: bool,
+    pub(crate) computer: bool,
 }
 
 pub(crate) fn touched_rows(patches: &[MetricPatch]) -> TouchedRows {
@@ -441,7 +426,8 @@ pub(crate) fn touched_rows(patches: &[MetricPatch]) -> TouchedRows {
             MetricPatch::Wait { request_id, .. } => {
                 touched.inference.insert(request_id.clone());
             }
-            MetricPatch::Computer(_) | MetricPatch::Error(_) => {}
+            MetricPatch::Computer(_) => touched.computer = true,
+            MetricPatch::Error(_) => {}
         }
     }
     touched.has_wait = patches
@@ -619,6 +605,15 @@ fn apply_tool_update(tools: &mut BTreeMap<String, StoredToolMetricCurrent>, upda
     if let Some(value) = update.dispatched_ns {
         row.dispatched_ns = Some(value);
     }
+    if let Some(value) = update.delivered_ns {
+        row.delivered_ns = Some(value);
+    }
+    if let Some(value) = update.claimed_ns {
+        row.claimed_ns = Some(value);
+    }
+    if let Some(value) = update.woken_ns {
+        row.woken_ns = Some(value);
+    }
     if let Some(value) = update.started_ns {
         row.started_ns = Some(value);
     }
@@ -741,26 +736,26 @@ fn apply_wait(
     summary: &mut StoredTurnSummaryCurrent,
     inference: &mut BTreeMap<String, StoredTurnInferenceCurrent>,
     request_id: &str,
-    kind: WaitKind,
+    kind: MetricWaitKind,
 ) {
     let old_throughput = inference
         .get(request_id)
         .and_then(|row| row.metric.output_tokens_per_second);
     let row = inference_entry(inference, request_id);
     match kind {
-        WaitKind::Retry => {
+        MetricWaitKind::Retry => {
             row.metric.retries = row.metric.retries.saturating_add(1);
             summary.retries += 1;
         }
-        WaitKind::RateLimit => {
+        MetricWaitKind::RateLimit => {
             row.metric.rate_limit_waits = row.metric.rate_limit_waits.saturating_add(1);
             summary.rate_limit_waits += 1;
         }
-        WaitKind::MissingGateway => {
+        MetricWaitKind::MissingGateway => {
             row.metric.gateway_waits = row.metric.gateway_waits.saturating_add(1);
             summary.gateway_waits += 1;
         }
-        WaitKind::ProviderFailure => {
+        MetricWaitKind::ProviderFailure => {
             row.metric.provider_failures = row.metric.provider_failures.saturating_add(1);
             summary.provider_failures += 1;
         }
@@ -775,12 +770,13 @@ pub(crate) fn apply_one(state: &mut TurnWrite, patch: &MetricPatch) {
         summary,
         inference,
         tools,
+        computer,
     } = state;
     match patch {
         MetricPatch::Stage(event) => apply_stage(summary, inference, tools, event),
         MetricPatch::Inference(update) => apply_inference_update(summary, inference, update),
         MetricPatch::Tool(update) => apply_tool_update(tools, update),
-        MetricPatch::Computer(value) => apply_computer(summary, value),
+        MetricPatch::Computer(value) => apply_computer(computer, value),
         MetricPatch::Error(value) => {
             summary.error = Some(clipped(value, 512));
         }
@@ -859,6 +855,7 @@ pub(crate) fn sort_tool_rows(rows: &mut [StoredToolMetricCurrent]) {
 /// remainder in `dropped_*`; a complete read reports zero.
 pub(crate) fn assemble_turn(
     summary: &StoredTurnSummaryCurrent,
+    computer: Option<ComputerMetric>,
     mut inference_rows: Vec<StoredTurnInferenceCurrent>,
     mut tool_rows: Vec<StoredToolMetricCurrent>,
     inference_limit: Option<usize>,
@@ -905,7 +902,7 @@ pub(crate) fn assemble_turn(
             .map(|row| InferenceMetric::from(row.metric))
             .collect(),
         tools: tools_page.into_iter().map(ToolMetric::from).collect(),
-        computer: summary.computer.clone(),
+        computer,
         append_to_first_token_ms: None,
         inference_duration_ms: None,
         append_to_idle_ms: None,

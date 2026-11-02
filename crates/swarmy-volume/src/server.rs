@@ -7,21 +7,18 @@ macro_rules! ensure {
         if !$condition { return Err(Error::Message(format!($($message)*))); }
     };
 }
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
-use swarmy_core::{LeaseOwnerId, ManifestId, NodeId, VolumeId, ignore_best_effort};
+use swarmy_core::{ManifestHeader, ManifestId, NodeId, VolumeId, ignore_best_effort};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
-
-const LEASE_DURATION: Duration = Duration::from_secs(60);
 
 #[derive(Serialize, Deserialize)]
 struct Request {
@@ -39,13 +36,23 @@ struct Request {
 #[serde(rename_all = "snake_case")]
 enum Query {
     Stats,
+    BootSet,
 }
 #[derive(Serialize, Deserialize)]
 struct Reply {
     flush: Option<FlushResult>,
     #[serde(default)]
     stats: Option<crate::DeviceStats>,
+    #[serde(default)]
+    boot_set: Option<swarmy_core::BootSet>,
     error: Option<String>,
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Shared attachment inputs. Both the CLI and swarmyd serve disks in process.
@@ -53,7 +60,7 @@ struct Reply {
 pub struct ServerConfig {
     pub directory: PathBuf,
     pub node: NodeId,
-    pub store: swarmy_store::Store,
+    pub metadata: Arc<dyn crate::VolumeMetadata>,
     pub objects: Arc<dyn object_store::ObjectStore>,
 }
 
@@ -186,19 +193,54 @@ impl Drop for SocketGuard {
     }
 }
 
+/// Stop recording and return the boot set for this attachment.
+/// # Errors
+/// Transport or decoding failures.
+pub async fn boot_set(config: &ServerConfig, id: VolumeId) -> Result<swarmy_core::BootSet> {
+    let request = Request {
+        node: config.node,
+        mount: None,
+        detach: false,
+        discard: false,
+        freeze: false,
+        query: Some(Query::BootSet),
+    };
+    let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
+    socket.write_all(&serde_json::to_vec(&request)?).await?;
+    socket.write_all(b"\n").await?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line).await?;
+    let reply: Reply = serde_json::from_str(&line)?;
+    if let Some(error) = reply.error {
+        return Err(Error::Message(error));
+    }
+    reply
+        .boot_set
+        .ok_or_else(|| Error::Message("attachment returned no boot set".into()))
+}
+
 /// Serve one kernel attachment until detached or shutdown is requested.
 /// The ready callback runs only after the kernel has published its capacity.
 /// # Errors
 /// Returns setup, lease, control transport, or final flush errors.
 pub async fn attach(
     config: ServerConfig,
-    id: VolumeId,
+    grant: crate::WriterGrant,
+    boot_set: Option<String>,
     path: Option<PathBuf>,
     background: bool,
     ready: impl FnOnce(&Path) -> Result<()> + Send,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<()> {
-    let node = config.node;
+    let crate::WriterGrant {
+        volume: id,
+        head,
+        header,
+        lease,
+        renewal: _renewal,
+    } = grant;
+    // A lock failure may belong to another attachment of this same owner.
+    // Never release its lease until this attachment holds the lock.
     let dir = &config.directory;
     std::fs::create_dir_all(dir)?;
     let lock = std::fs::OpenOptions::new()
@@ -216,31 +258,22 @@ pub async fn attach(
     }
     let listener = UnixListener::bind(&socket_path)?;
     let _socket_guard = SocketGuard(socket_path);
-    let store = &config.store;
-    let now = Timestamp::now();
-    let lease = store
-        .acquire_writer_lease(
-            id,
-            LeaseOwnerId::from_ulid(node.as_ulid()),
-            now,
-            now.checked_add(LEASE_DURATION)?,
-        )
-        .await?;
     let result = serve(
         &config,
         id,
+        boot_set,
         path,
         background,
         listener,
-        (&lease, ready, shutdown),
+        (lease.clone(), head, header, ready, shutdown),
     )
     .await;
-    // Setup errors must not strand a lease. The running server releases its
-    // renewed token itself, so this fallback can only release the initial grant.
     if result.is_err()
-        && let Err(error) = store
-            .release_writer_lease(id, &lease, Timestamp::now())
-            .await
+        && let Err(error) = crate::metadata::with_current_lease(&lease, |lease| {
+            let metadata = config.metadata.clone();
+            async move { metadata.release_writer_lease(id, &lease).await }
+        })
+        .await
     {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after setup failure failed");
     }
@@ -251,27 +284,21 @@ pub async fn attach(
 async fn serve(
     config: &ServerConfig,
     id: VolumeId,
+    boot_set: Option<String>,
     path: Option<PathBuf>,
     background: bool,
     listener: UnixListener,
     lifecycle: (
-        &swarmy_core::Lease,
+        crate::WriterLease,
+        ManifestId,
+        ManifestHeader,
         impl FnOnce(&Path) -> Result<()> + Send,
         impl Future<Output = ()> + Send,
     ),
 ) -> Result<()> {
-    let (lease, ready, shutdown) = lifecycle;
-    let store = &config.store;
+    let (lease, head, header, ready, shutdown) = lifecycle;
     let node = config.node;
     let objects = config.objects.clone();
-    let record = store
-        .get_volume(id)
-        .await?
-        .ok_or_else(|| Error::Message("volume not found".into()))?;
-    let header = store
-        .get_manifest(record.head_manifest)
-        .await?
-        .ok_or_else(|| Error::Message("manifest missing".into()))?;
     let manifest = Manifest::load(&*objects, header).await?;
     // A new grant must discard every write after the last committed snapshot,
     // including local writes from a previous server on this same machine.
@@ -279,23 +306,35 @@ async fn serve(
         .prefix(&format!("{id}-"))
         .tempdir_in(&config.directory)?;
     let device = VolumeDevice::open(
-        ChunkStore::new(objects),
+        ChunkStore::new(objects.clone()),
         manifest,
         config.directory.join("cache"),
         dirty.path(),
         4,
     )
     .await?;
-    let policy = swarmy_config::Settings::load()
+    let settings = swarmy_config::Settings::load()
         .map_err(|error| Error::Message(error.to_string()))?
-        .settings
-        .volume_snapshots;
+        .settings;
+    let policy = settings.volume_snapshots;
+    let _prefetch = boot_set.map(|key| {
+        let device = device.clone();
+        let concurrency = settings.sandbox.boot_prefetch_concurrency.max(1);
+        // The attachment owns and cancels the prefetch task on teardown.
+        // ast-grep-ignore: no-spawn-in-libraries
+        AbortOnDrop(tokio::spawn(async move {
+            match crate::get_boot_set(&*objects, &key).await {
+                Ok(set) => device.prefetch_boot_set(&set, concurrency).await,
+                Err(error) => tracing::warn!(error = %swarmy_core::error_chain(&error), "boot set prefetch failed; demand reads continue"),
+            }
+        }))
+    });
     let writer = VolumeWriter::with_retention(
         device.clone(),
-        store.clone(),
+        config.metadata.clone(),
         id,
         lease.clone(),
-        record.head_manifest,
+        head,
         policy.retention,
     );
     let (path, attachment) = attach_kernel(path, device.clone()).await?;
@@ -305,7 +344,7 @@ async fn serve(
     // publication cannot race unmounting or the final publication.
     let operations = Arc::new(tokio::sync::Mutex::new(()));
     let snapshots = start_snapshots(writer.clone(), device, operations.clone(), policy);
-    let (_renewal, mut lost_rx) = start_renewal(writer.clone());
+    let mut watch = lease;
     ready(&path)?;
     tokio::pin!(shutdown);
     loop {
@@ -313,15 +352,23 @@ async fn serve(
             result = listener.accept() => {
                 let (socket, _) = result?;
                 let _operation = operations.lock().await;
-                if handle(socket, node, &path, &writer, &mut attachment).await? {
-                    drop(snapshots);
-                    break;
+                match handle(socket, node, &path, &writer, &mut attachment).await? {
+                    Handled::Attached => {}
+                    Handled::Detached => {
+                        drop(snapshots);
+                        break;
+                    }
+                    Handled::Discarded => {
+                        drop(snapshots);
+                        release_after_discard(&writer).await;
+                        break;
+                    }
                 }
             }
-            error = &mut lost_rx => {
+            error = watch.lost() => {
                 let _operation = operations.lock().await;
                 drop(snapshots);
-                return Err(Error::Message(format!("writer lease lost; device disconnected: {}", error?)));
+                return Err(Error::Message(format!("writer lease lost; device disconnected: {}", swarmy_core::error_chain(&*error))));
             }
             () = &mut shutdown => {
                 let _operation = operations.lock().await;
@@ -356,34 +403,6 @@ fn start_snapshots(
     })
 }
 
-fn start_renewal(
-    writer: Arc<VolumeWriter>,
-) -> (
-    AbortTask,
-    tokio::sync::oneshot::Receiver<crate::VolumeError>,
-) {
-    let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
-    // The lease-renewal loop; AbortTask aborts it on drop.
-    // ast-grep-ignore: no-spawn-in-libraries
-    let task = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(15)).await;
-            if let Err(error) = writer.renew(LEASE_DURATION).await {
-                ignore_best_effort(lost_tx.send(error), "report lost volume writer");
-                break;
-            }
-        }
-    });
-    (AbortTask(task), lost_rx)
-}
-
-struct AbortTask(tokio::task::JoinHandle<()>);
-impl Drop for AbortTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 async fn attach_kernel(
     path: Option<PathBuf>,
     device: Arc<VolumeDevice>,
@@ -403,13 +422,40 @@ async fn attach_kernel(
     ))
 }
 
+/// What one control request left of the attachment.
+enum Handled {
+    Attached,
+    Detached,
+    /// Detached without publication; the writer lease is still held.
+    Discarded,
+}
+
+/// Placement authority is already gone when a disk is discarded, so releasing
+/// the writer lease only lets another node take the volume before the lease
+/// expires. It is best effort and bounded: during a node API outage the lease
+/// simply runs out, and nothing waits a full request deadline for it.
+const DISCARD_RELEASE_BUDGET: Duration = Duration::from_secs(2);
+
+async fn release_after_discard(writer: &VolumeWriter) {
+    match tokio::time::timeout(DISCARD_RELEASE_BUDGET, writer.release()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after discard failed; the lease expires on its own");
+        }
+        Err(_) => tracing::warn!(
+            budget_ms = DISCARD_RELEASE_BUDGET.as_millis(),
+            "writer lease release after discard timed out; the lease expires on its own"
+        ),
+    }
+}
+
 async fn handle(
     socket: UnixStream,
     node: NodeId,
     path: &Path,
     writer: &VolumeWriter,
     attachment: &mut Option<Attachment>,
-) -> Result<bool> {
+) -> Result<Handled> {
     let (read, mut write) = socket.into_split();
     let mut line = String::new();
     let result = async {
@@ -424,7 +470,13 @@ async fn handle(
             "writer lease belongs to another node ({node})"
         );
         if request.query.is_some() {
-            return Ok((None, false, Some(writer.device_stats())));
+            return Ok(match request.query {
+                Some(Query::Stats) => (None, Handled::Attached, Some(writer.device_stats()), None),
+                Some(Query::BootSet) => {
+                    (None, Handled::Attached, None, Some(writer.take_boot_set()))
+                }
+                None => unreachable!("query checked above"),
+            });
         }
         if request.discard {
             let detached = attachment
@@ -433,10 +485,9 @@ async fn handle(
                 .detach()
                 .await;
             detached?;
-            if let Err(error) = writer.release().await {
-                tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after discard failed");
-            }
-            return Ok((None, true, None));
+            // Reply first: the caller holds the runtime's lifecycle gate, and the
+            // release goes to the node API.
+            return Ok((None, Handled::Discarded, None, None));
         }
         let manifest = if request.detach {
             finish(path, writer, attachment).await?
@@ -463,14 +514,20 @@ async fn handle(
                 .flush(if request.freeze { mount } else { None })
                 .await?
         };
-        Ok::<_, Error>((Some(manifest), request.detach, None))
+        let handled = if request.detach {
+            Handled::Detached
+        } else {
+            Handled::Attached
+        };
+        Ok::<_, Error>((Some(manifest), handled, None, None))
     }
     .await;
-    let (reply, detached) = match result {
-        Ok((manifest, detached, stats)) => (
+    let (reply, handled) = match result {
+        Ok((manifest, detached, stats, boot_set)) => (
             Reply {
                 flush: manifest,
                 stats,
+                boot_set,
                 error: None,
             },
             detached,
@@ -479,9 +536,14 @@ async fn handle(
             Reply {
                 flush: None,
                 stats: None,
+                boot_set: None,
                 error: Some(format!("{error:#}")),
             },
-            attachment.is_none(),
+            if attachment.is_none() {
+                Handled::Detached
+            } else {
+                Handled::Attached
+            },
         ),
     };
     // A caller may disconnect after submitting a command; completing publication
@@ -491,7 +553,7 @@ async fn handle(
         "write volume reply",
     );
     ignore_best_effort(write.write_all(b"\n").await, "write volume reply");
-    Ok(detached)
+    Ok(handled)
 }
 
 async fn mountpoint(path: &Path) -> Result<Option<PathBuf>> {

@@ -220,9 +220,7 @@ struct Api {
 }
 impl Api {
     fn new() -> Result<Self> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        let port = crate::process::free_port(std::net::Ipv4Addr::LOCALHOST.into())?;
         Ok(Self {
             url: format!("http://127.0.0.1:{port}"),
             listen: format!("127.0.0.1:{port}"),
@@ -286,7 +284,7 @@ fn environment(
             f.files.path().join("keyring").display().to_string(),
         ),
         ("SWARMY_INFERENCE_DEFAULT_ROUTE", ROUTE.into()),
-        ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", "600".into()),
+        ("SWARMY_MAX_SESSION_WAIT_SECONDS", "600".into()),
         ("SWARMY_WORKER_PARTITIONS", "0-255".into()),
         ("SWARMY_SCHEDULER_PARTITIONS", "0-255".into()),
         ("SWARMY_GATEWAY_CONCURRENCY", "1".into()),
@@ -395,6 +393,37 @@ async fn audit(
         samples += 1;
     }
     Ok((samples, waiting))
+}
+/// Name each session that is not idle when the drive times out, with the
+/// state, lease and wait that hold it, so a stall can be diagnosed.
+async fn report_unfinished(store: &Store, sessions: &[SessionId]) {
+    let rows = match store.lease_audit(sessions).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(error = %swarmy_core::error_chain(&error), "cannot read unfinished sessions");
+            return;
+        }
+    };
+    for row in rows.iter().filter(|row| row.state != SessionState::Idle) {
+        let session = store.fetch_session(row.session_id).await.ok().flatten();
+        let wait = store.session_wait(row.session_id).await.ok().flatten();
+        let after = session
+            .as_ref()
+            .map_or(0, |session| session.head_seq.saturating_sub(4));
+        let tail = store
+            .read_events(row.session_id, after, 8)
+            .await
+            .unwrap_or_default();
+        tracing::error!(
+            session = %row.session_id,
+            state = ?row.state,
+            leased = row.leased,
+            head = ?session.map(|session| session.head_seq),
+            wait = ?wait,
+            last_events = ?tail,
+            "session unfinished at the drive deadline"
+        );
+    }
 }
 async fn poll_until<T>(
     label: &str,
@@ -712,12 +741,14 @@ pub(crate) async fn exercise(f: &mut Fixture, config: &Config, binaries: &Path) 
         Ok::<_, anyhow::Error>(())
     };
     let audit = audit(&f.store, &mut f.processes, &sessions, &finished);
-    let ((), (samples, waiting)) =
-        timeout(Duration::from_secs(config.session_timeout_secs), async {
-            tokio::try_join!(drive, audit)
-        })
-        .await
-        .context("saturation drive timed out")??;
+    let driven = timeout(Duration::from_secs(config.session_timeout_secs), async {
+        tokio::try_join!(drive, audit)
+    })
+    .await;
+    if driven.is_err() {
+        report_unfinished(&f.store, &sessions).await;
+    }
+    let ((), (samples, waiting)) = driven.context("saturation drive timed out")??;
     ensure!(
         waiting > 0,
         "no session was ever observed waiting; the route was not saturated"

@@ -17,10 +17,13 @@ password manager, password-leak detection, and promotional tabs. DevTools is onl
 reachable from inside the sandbox. A fresh browser profile is stored under
 `/home/agent/.config/chromium-debug` unless `CHROMIUM_USER_DATA_DIR` is set.
 
-The sandbox starts `/usr/local/libexec/swarmy-init` as PID 1. It starts Xvfb
-and Openbox and restarts the display within a few seconds if Xvfb dies.
+`images/common/desktop-setup.sh` installs the display stack, Chromium and the
+helpers; `swarmy-dev` shares it. The sandbox starts `/usr/local/libexec/swarmy-init`
+as PID 1. It starts Xvfb and Openbox on the software path and restarts the display
+within a few seconds if the server dies.
 `/etc/swarmy/environment` sets `DISPLAY=:99`, `LIBGL_ALWAYS_SOFTWARE=1`,
-`GALLIUM_DRIVER=llvmpipe`, and the lavapipe ICD path on container processes.
+`GALLIUM_DRIVER=llvmpipe` on container processes. PID 1 and the Chromium
+wrapper pin lavapipe on the software display.
 The pinned Chromium snapshot's SHA-256 is checked before extraction. The
 default memory limit is 3 GiB and `/tmp` is scratch space. The recipe reserves a 12 GiB sparse virtual
 disk (12,884,901,888 bytes), compared with base-ubuntu's 8 GiB
@@ -30,7 +33,7 @@ inferred from the virtual size.
 
 To add another program, copy this recipe directory to a new directory under
 `images/`, add the Ubuntu package to `packages` in `recipe.toml` (or install
-it in `setup.sh`), and run `swarmy image build` on the copy. Change `disk_size` if the
+it in a setup script of the copy), and run `swarmy image build` on the copy. Change `disk_size` if the
 program exceeds the available disk; the value must be a multiple of 256 KiB.
 
 On a node with sudo and NBD support, validate in a session on this image:
@@ -38,7 +41,8 @@ On a node with sudo and NBD support, validate in a session on this image:
 ```sh
 xdpyinfo | head
 glxinfo -B | grep -i 'renderer string'  # llvmpipe
-vulkaninfo --summary | grep -i lavapipe
+vulkaninfo --summary | grep DRIVER_ID_MESA_LLVMPIPE  # lavapipe
+cat /run/swarmy-display/renderer  # software
 chromium about:blank &
 curl -fsS http://127.0.0.1:9222/json/version
 blender --background --python-expr 'import bpy; bpy.context.scene.render.resolution_x = 32; bpy.context.scene.render.resolution_y = 32; bpy.context.scene.render.resolution_percentage = 100; bpy.context.scene.render.filepath = "/tmp/desktop-test.png"; bpy.ops.render.render(write_still=True)'

@@ -420,6 +420,65 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
     assert!(store.scan_inflight(None, 64).await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn completion_clears_the_inference_wait_in_its_own_commit() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    // An earlier retryable failure parked the session; waking keeps the wait's
+    // history until an attempt completes.
+    let lease = store
+        .claim_lease(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .park_inference(
+                id,
+                &lease,
+                &failure(1, "sat/a-key: 429", 160),
+                timestamp(100),
+                std::time::Duration::from_secs(3600),
+            )
+            .await
+            .unwrap()
+    );
+    assert!(store.wake_wait(id, timestamp(170)).await.unwrap());
+    assert!(store.session_wait(id).await.unwrap().is_some());
+    let mut completion = terminal_completion(store, id).await;
+    completion.claim.owner = owner();
+    completion.claim.expires_at = Timestamp::now()
+        .checked_add(std::time::Duration::from_secs(60))
+        .unwrap();
+    completion.now = Timestamp::now();
+    assert!(
+        store
+            .start_inference(&completion.claim, completion.now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_inference(&completion, &"answer")
+            .await
+            .unwrap()
+    );
+    // The commit that makes the session runnable also ends the wait, so no
+    // separate clear can later delete a wait the next turn parks with.
+    assert!(store.session_wait(id).await.unwrap().is_none());
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Runnable);
+    assert_eq!(session.route_step, 0);
+}
+
 async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::InferenceCompletion {
     let lease = store
         .claim_lease(
@@ -1076,4 +1135,276 @@ async fn summary_rollover_copies_cache_affinity_to_main_and_side_successors() {
             Some(affinity.clone())
         );
     }
+}
+
+// Hold a read conflict on the summary while another metric batch commits.
+async fn summary_conflict_probe(
+    test: &TestStore,
+    session: SessionId,
+    turn: MessageId,
+) -> foundationdb::Transaction {
+    use foundationdb::options::ConflictRangeType;
+    let key = test.root.subspace(&("turn_metrics",)).pack(&(
+        session.as_ulid().to_bytes().as_slice(),
+        turn.as_ulid().to_bytes().as_slice(),
+    ));
+    let mut end = key.clone();
+    end.push(0);
+    let trx = test.db.create_trx().unwrap();
+    trx.get_read_version().await.unwrap();
+    trx.add_conflict_range(&key, &end, ConflictRangeType::Read)
+        .unwrap();
+    trx
+}
+
+#[tokio::test]
+async fn tool_and_computer_metrics_leave_the_turn_summary_alone() {
+    use swarmy_core::{TurnEvent, TurnStage};
+    use swarmy_store::{
+        ComputerMetric, MetricPatch, ToolMetric, completion_patches, dispatch_patches,
+    };
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let session = SessionId::from_ulid(Ulid::generate());
+    let turn = MessageId::from_ulid(Ulid::generate());
+    let request = RequestId::for_step(session, 1);
+    let event = |stage, ns, request_id| TurnEvent {
+        session_id: session,
+        turn_id: turn,
+        stage,
+        request_id,
+        clock_id: "test".into(),
+        monotonic_ns: ns,
+        unix_ns: i128::from(ns),
+    };
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            dispatch_patches(
+                event(TurnStage::ToolDispatched, 1_000_000, Some(request)),
+                "bash",
+            ),
+        )
+        .await
+        .unwrap();
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            vec![MetricPatch::Stage(event(
+                TurnStage::Appended,
+                500_000,
+                None,
+            ))],
+        )
+        .await
+        .unwrap();
+    let probe = test.root.pack(&("probe",));
+    let trx = summary_conflict_probe(&test, session, turn).await;
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            completion_patches(
+                ToolMetric {
+                    request_id: request.to_string(),
+                    exit_status: Some(0),
+                    ..ToolMetric::default()
+                },
+                None,
+                event(TurnStage::ToolCompleted, 2_000_000, Some(request)),
+            ),
+        )
+        .await
+        .unwrap();
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            vec![MetricPatch::Computer(ComputerMetric {
+                placement_ms: Some(12.5),
+                ..ComputerMetric::default()
+            })],
+        )
+        .await
+        .unwrap();
+    trx.set(&probe, b"ok");
+    trx.commit().await.unwrap();
+
+    let trx = summary_conflict_probe(&test, session, turn).await;
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            vec![MetricPatch::Stage(event(TurnStage::Idle, 3_000_000, None))],
+        )
+        .await
+        .unwrap();
+    trx.set(&probe, b"changed");
+    assert_eq!(trx.commit().await.unwrap_err().code(), 1020);
+    let turns = test
+        .store
+        .list_turn_metrics_paged(session, None, 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].tools[0].exit_status, Some(0));
+    assert_eq!(turns[0].computer.as_ref().unwrap().placement_ms, Some(12.5));
+    assert!(turns[0].append_to_idle_ms.is_some());
+}
+
+#[tokio::test]
+async fn computer_samples_merge_in_their_own_row() {
+    use swarmy_store::{ComputerMetric, MetricPatch};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let session = SessionId::from_ulid(Ulid::generate());
+    let turn = MessageId::from_ulid(Ulid::generate());
+    for sample in [
+        ComputerMetric {
+            placement_ms: Some(10.0),
+            cold: Some(false),
+            ..ComputerMetric::default()
+        },
+        ComputerMetric {
+            first_tool_chunks_fetched: Some(3),
+            ..ComputerMetric::default()
+        },
+        ComputerMetric {
+            first_tool_chunks_fetched: Some(9),
+            ..ComputerMetric::default()
+        },
+    ] {
+        test.store
+            .record_turn_metrics(session, turn, vec![MetricPatch::Computer(sample)])
+            .await
+            .unwrap();
+    }
+    let turns = test
+        .store
+        .list_turn_metrics_paged(session, None, 10, None, None)
+        .await
+        .unwrap();
+    let computer = turns[0].computer.as_ref().unwrap();
+    assert_eq!(computer.placement_ms, Some(10.0));
+    assert_eq!(computer.cold, Some(false));
+    assert_eq!(computer.first_tool_chunks_fetched, Some(3));
+}
+
+#[tokio::test]
+async fn agent_placement_latency_comes_from_computer_rows() {
+    use swarmy_store::{ComputerMetric, MetricPatch};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = swarmy_testkit::image(store).await;
+    let agent = store
+        .create_agent("placement-test", image, "coding", timestamp(0), None)
+        .await
+        .unwrap();
+    let session = SessionId::from_ulid(Ulid::generate());
+    store
+        .create_agent_session(session, Some(agent.agent_id), timestamp(0), None)
+        .await
+        .unwrap();
+    store
+        .set_main_session(agent.agent_id, session)
+        .await
+        .unwrap();
+    let turn = MessageId::from_ulid(Ulid::generate());
+    store
+        .record_turn_metrics(
+            session,
+            turn,
+            vec![MetricPatch::Computer(ComputerMetric {
+                placement_ms: Some(12.5),
+                ..ComputerMetric::default()
+            })],
+        )
+        .await
+        .unwrap();
+    let metrics = store
+        .agent_turn_metrics(agent.agent_id, 10, None)
+        .await
+        .unwrap();
+    assert_eq!(metrics.turns, 1);
+    assert!((metrics.latencies["placement"].p50_ms - 12.5).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn timing_breakdown_round_trips_through_the_store() {
+    use swarmy_store::{ComputerMetric, MetricPatch, ToolMetric, completion_patches};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let session = SessionId::from_ulid(Ulid::generate());
+    let turn = MessageId::from_ulid(Ulid::generate());
+    let request = RequestId::for_step(session, 1);
+    let event = swarmy_core::TurnEvent {
+        session_id: session,
+        turn_id: turn,
+        stage: swarmy_core::TurnStage::ToolCompleted,
+        request_id: Some(request),
+        clock_id: "test".into(),
+        monotonic_ns: 1,
+        unix_ns: 1,
+    };
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            completion_patches(
+                ToolMetric {
+                    request_id: request.to_string(),
+                    delivered_ns: Some(1),
+                    claimed_ns: Some(2),
+                    started_ns: Some(3),
+                    ..Default::default()
+                },
+                None,
+                event,
+            ),
+        )
+        .await
+        .unwrap();
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            vec![
+                MetricPatch::Tool(ToolMetric {
+                    request_id: request.to_string(),
+                    woken_ns: Some(9),
+                    ..Default::default()
+                }),
+                MetricPatch::Computer(ComputerMetric {
+                    open_ms: Some(4.0),
+                    boot_ms: Some(6.0),
+                    ..Default::default()
+                }),
+            ],
+        )
+        .await
+        .unwrap();
+    let turns = test
+        .store
+        .list_turn_metrics_paged(session, None, 10, None, None)
+        .await
+        .unwrap();
+    let row = &turns[0].tools[0];
+    assert_eq!(
+        (
+            row.delivered_ns,
+            row.claimed_ns,
+            row.started_ns,
+            row.woken_ns
+        ),
+        (Some(1), Some(2), Some(3), Some(9))
+    );
+    let computer = turns[0].computer.as_ref().unwrap();
+    assert_eq!((computer.open_ms, computer.boot_ms), (Some(4.0), Some(6.0)));
 }

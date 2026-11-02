@@ -9,5 +9,6 @@ case "$1" in
       printf '%s\n' "$SWARMY_DEFAULT_IMAGE" >> "$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG"
     fi
     echo 'api ready';;
+  node-api) echo 'node-api ready';;
 esac
 exec /bin/sleep 600

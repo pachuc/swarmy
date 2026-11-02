@@ -114,6 +114,7 @@ pub enum WorkQueue {
     Inference(SubjectToken),
     Runnable(u16),
     NodeTools(NodeId),
+    ImageProbes,
 }
 
 impl WorkQueue {
@@ -122,6 +123,7 @@ impl WorkQueue {
             Self::Inference(_) => 0,
             Self::Runnable(_) => 1,
             Self::NodeTools(_) => 2,
+            Self::ImageProbes => 3,
         }
     }
 
@@ -134,6 +136,7 @@ impl WorkQueue {
                 subjects::SCHED_RUNNABLE.replace("{partition}", &partition.to_string())
             }
             Self::NodeTools(node) => subjects::TOOL_NODE.replace("{node_id}", &node.to_string()),
+            Self::ImageProbes => subjects::IMAGE_PROBE.to_owned(),
         }
     }
 
@@ -142,6 +145,7 @@ impl WorkQueue {
             Self::Inference(provider) => format!("infer_{}", provider.0),
             Self::Runnable(partition) => format!("runnable_{partition}"),
             Self::NodeTools(node) => format!("node_{node}"),
+            Self::ImageProbes => "image_probes".into(),
         }
     }
 }
@@ -170,7 +174,7 @@ impl LiveFeed {
 }
 
 /// An absent prefix uses the design's subjects. Work stream names are `INFER_REQ`,
-/// `SCHED_RUNNABLE`, and `TOOL_NODE`. A prefix adds `prefix.` to
+/// `SCHED_RUNNABLE`, `TOOL_NODE`, and `IMAGE_PROBE`. A prefix adds `prefix.` to
 /// subjects and `prefix_` to stream names, isolating a deployment or test.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -197,7 +201,7 @@ impl Config {
         )
     }
 
-    fn streams(&self) -> [stream::Config; 3] {
+    fn streams(&self) -> [stream::Config; 4] {
         [
             (
                 "INFER_REQ",
@@ -208,6 +212,7 @@ impl Config {
                 subjects::SCHED_RUNNABLE.replace("{partition}", "*"),
             ),
             ("TOOL_NODE", subjects::TOOL_NODE.replace("{node_id}", "*")),
+            ("IMAGE_PROBE", subjects::IMAGE_PROBE.to_owned()),
         ]
         .map(|(name, subject)| stream::Config {
             name: self
@@ -339,7 +344,7 @@ impl Bus {
         })
     }
 
-    /// Create the three work streams and durable consumers for the supplied routes.
+    /// Create the four work streams and durable consumers for the supplied routes.
     /// Safe to repeat; existing resources are checked but never updated.
     ///
     /// # Errors
@@ -392,6 +397,30 @@ impl Bus {
         queue: &WorkQueue,
         value: &T,
     ) -> Result<(), Error> {
+        self.publish_work_as(queue, value, None).await
+    }
+
+    /// Publish work under a message id. The stream keeps one message per id
+    /// within its duplicate window, so repeated publishes of the same work,
+    /// from any publisher, reach consumers once.
+    ///
+    /// # Errors
+    /// Returns encoding, publication, or persistence acknowledgement failures.
+    pub async fn publish_work_once<T: Serialize + ?Sized>(
+        &self,
+        queue: &WorkQueue,
+        value: &T,
+        id: &str,
+    ) -> Result<(), Error> {
+        self.publish_work_as(queue, value, Some(id)).await
+    }
+
+    async fn publish_work_as<T: Serialize + ?Sized>(
+        &self,
+        queue: &WorkQueue,
+        value: &T,
+        id: Option<&str>,
+    ) -> Result<(), Error> {
         let payload = encode(value)?;
         let limit = self.client.max_payload();
         if payload.len() > limit {
@@ -400,12 +429,21 @@ impl Bus {
                 limit,
             });
         }
-        self.jetstream
-            .publish(self.config.subject(&queue.subject()), payload.into())
-            .await
-            .map_err(nats)?
-            .await
-            .map_err(nats)?;
+        let subject = self.config.subject(&queue.subject());
+        let pending = match id {
+            Some(id) => {
+                let mut headers = async_nats::HeaderMap::new();
+                headers.insert(async_nats::header::NATS_MESSAGE_ID, id);
+                self.jetstream
+                    .publish_with_headers(subject, headers, payload.into())
+                    .await
+            }
+            None => self.jetstream.publish(subject, payload.into()).await,
+        };
+        let ack = pending.map_err(nats)?.await.map_err(nats)?;
+        if ack.duplicate {
+            tracing::debug!(id, stream = %ack.stream, "work publish dropped as a duplicate");
+        }
         Ok(())
     }
 
@@ -418,10 +456,23 @@ impl Bus {
         &self,
         queue: &WorkQueue,
     ) -> Result<WorkMessages<T>, Error> {
+        self.consume_batched(queue, std::num::NonZeroUsize::MIN)
+            .await
+    }
+
+    /// Open a pull loop on this route's durable consumer, `batch` messages per pull.
+    /// Only a consumer that owns its queue alone should pull more than one.
+    /// # Errors
+    /// Returns setup, configuration, or pull subscription errors.
+    pub async fn consume_batched<T: DeserializeOwned>(
+        &self,
+        queue: &WorkQueue,
+        batch: std::num::NonZeroUsize,
+    ) -> Result<WorkMessages<T>, Error> {
         let consumer = self.ensure_consumer(queue).await?;
         let messages = consumer
             .stream()
-            .max_messages_per_batch(1)
+            .max_messages_per_batch(batch.get())
             .messages()
             .await
             .map_err(nats)?;

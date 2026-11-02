@@ -1,45 +1,67 @@
-use anyhow::{Context, Result, bail};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, Instant},
+use crate::{
+    heads::Heads,
+    keeper::{Answered, Keeper, Occupancy, PlacementHold},
+    tools::Claimed,
 };
+use anyhow::{Context, Result, bail};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use swarmy_core::{
-    AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SandboxSpec,
-    SessionId, ToolJob, ignore_best_effort,
+    AgentId, BlockDevice, ManifestHeader, ManifestId, MessageId, PlacementRecord, SandboxSpec,
+    SessionId, ToolJob, VolumeId, ignore_best_effort,
+};
+use swarmy_node_protocol::{
+    ClientError, DEFAULT_DEADLINE, HostingBootSetRequest, HostingCloseRequest, HostingOpenRequest,
+    HostingReadyRequest, MetricBatch, NodeClient, NodeMetric, NodeRefusal, ToolRouteRequest,
+    WriterToken,
 };
 use swarmy_sandbox::RuncRuntime;
-use swarmy_store::Store;
+use swarmy_volume::{WriterGrant, WriterLease};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::time::Instant;
+
+/// Stop recording and store the nonempty boot set under its content address.
+pub(crate) async fn store_boot_set(
+    runtime: &RuncRuntime,
+    volume: VolumeId,
+) -> Result<Option<(String, swarmy_core::BootSet)>> {
+    let set = runtime.boot_set(volume).await?;
+    if set.chunks.is_empty() {
+        return Ok(None);
+    }
+    let key = swarmy_volume::put_boot_set(runtime.objects(), &set).await?;
+    Ok(Some((key, set)))
+}
+
+#[derive(Clone, Copy)]
+struct BootTimes {
+    placement: f64,
+    open: f64,
+    boot: f64,
+}
 
 struct Call {
     job: ToolJob,
-    turn: Option<MessageId>,
+    delivered_ns: Option<i64>,
     reply: oneshot::Sender<Result<()>>,
     activity: ActivityGuard,
 }
 struct Entry {
     calls: mpsc::Sender<Call>,
     task: tokio::task::JoinHandle<()>,
-    activity: Arc<std::sync::Mutex<Activity>>,
+    activity: Arc<std::sync::Mutex<Occupancy>>,
 }
 
 #[derive(Default)]
-struct Activity {
-    placement: Option<PlacementRecord>,
-    holder: Option<SessionId>,
-    queued: u64,
-}
 
 // The guard follows the call through admission, boot and execution. Cancellation
 // and dropped queues must release occupancy even when no reply can be sent.
 struct ActivityGuard {
-    state: Arc<std::sync::Mutex<Activity>>,
+    state: Arc<std::sync::Mutex<Occupancy>>,
     active: bool,
 }
 
 impl ActivityGuard {
-    fn queued(state: Arc<std::sync::Mutex<Activity>>) -> Self {
+    fn queued(state: Arc<std::sync::Mutex<Occupancy>>) -> Self {
         state.lock().expect("activity lock poisoned").queued += 1;
         Self {
             state,
@@ -66,12 +88,24 @@ impl Drop for ActivityGuard {
     }
 }
 
-/// Each actor serializes calls for one agent while its renewal runs independently.
+struct Opening {
+    placement: PlacementRecord,
+    hold: PlacementHold,
+    volume: VolumeId,
+    writer: Option<WriterLease>,
+    head: ManifestId,
+    boot_set: Option<String>,
+    header: ManifestHeader,
+    spec: SandboxSpec,
+}
+
+/// Each actor serializes calls for one agent while the keeper renews its leases.
 pub(crate) struct Hosting {
-    store: Store,
+    heads: Heads,
     runtime: Arc<RuncRuntime>,
-    node: NodeId,
-    lease: Duration,
+    client: NodeClient,
+    keeper: Keeper,
+    routes: Mutex<BTreeMap<SessionId, AgentId>>,
     idle: Duration,
     entries: Mutex<BTreeMap<AgentId, Entry>>,
     previous: Mutex<BTreeMap<AgentId, u64>>,
@@ -86,96 +120,109 @@ pub(crate) struct Hosting {
 }
 
 impl Hosting {
-    async fn sandbox_spec(&self, agent: AgentId, session: SessionId) -> Result<SandboxSpec> {
-        Ok(SandboxSpec {
-            agent_id: agent,
-            scratch: self.scratch_for_session(session).await?,
-            requirements: self.requirements_for_session(agent, session).await?,
+    pub(crate) fn new(
+        heads: Heads,
+        client: NodeClient,
+        keeper: Keeper,
+        runtime: Arc<RuncRuntime>,
+        settings: &swarmy_config::Settings,
+        previous: &[PlacementRecord],
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            heads,
+            client,
+            keeper,
+            runtime,
+            idle: settings.sandbox.idle_secs,
+            entries: Mutex::new(BTreeMap::new()),
+            routes: Mutex::new(BTreeMap::new()),
+            previous: Mutex::new(previous.iter().map(|p| (p.agent_id, p.epoch)).collect()),
+            computer_sampled: Mutex::new(BTreeMap::new()),
+            shutdown: watch::channel(false).0,
         })
     }
 
-    async fn requirements_for_session(
-        &self,
-        agent: AgentId,
-        session: SessionId,
-    ) -> Result<swarmy_core::SandboxRequirements> {
-        if let Some(record) = self.store.get_agent(agent).await? {
-            return Ok(record.requirements);
+    async fn route(&self, job: &ToolJob) -> Result<Option<AgentId>> {
+        if let Some(agent) = self.routes.lock().await.get(&job.session_id).copied() {
+            return Ok(Some(agent));
         }
-        if let Some(image) = self.store.pinned_image(session).await? {
-            return Ok(swarmy_core::SandboxRequirements {
-                memory_mib: self.store.image_memory(&image).await?.unwrap_or(768),
-                gpu: swarmy_core::GpuRequirement::default(),
-            });
-        }
-        Ok(swarmy_core::SandboxRequirements::default())
+        let agent = match self
+            .client
+            .route_tool(
+                &ToolRouteRequest { job: job.clone() },
+                Instant::now() + DEFAULT_DEADLINE,
+            )
+            .await
+        {
+            Ok(answer) => answer.agent,
+            Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => return Ok(None),
+            Err(ClientError::Refused(refusal)) => return Err(refusal_error(refusal)),
+            Err(error) => return Err(error.into()),
+        };
+        self.routes.lock().await.insert(job.session_id, agent);
+        Ok(Some(agent))
     }
 
-    async fn scratch_for_session(&self, session: SessionId) -> Result<Vec<String>> {
-        if let Some(image) = self.store.pinned_image(session).await? {
-            Ok(self.store.image_scratch(&image).await?)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-    pub(crate) async fn new(
-        store: Store,
-        runtime: Arc<RuncRuntime>,
-        node: NodeId,
-        settings: &swarmy_config::Settings,
-    ) -> Result<Arc<Self>> {
-        let mut previous = BTreeMap::new();
-        let mut cursor = None;
-        loop {
-            let page = store
-                .list_by_node(node, cursor, swarmy_store::MAX_SCAN_LIMIT)
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            cursor = page.last().map(|p| p.agent_id);
-            previous.extend(page.into_iter().map(|p| (p.agent_id, p.epoch)));
-        }
-        Ok(Arc::new(Self {
-            store,
-            runtime,
-            node,
-            lease: settings.scheduler.placement_lease_secs,
-            idle: settings.sandbox.idle_secs,
-            entries: Mutex::new(BTreeMap::new()),
-            previous: Mutex::new(previous),
-            computer_sampled: Mutex::new(BTreeMap::new()),
-            shutdown: watch::channel(false).0,
+    async fn open(
+        &self,
+        agent: AgentId,
+        job: &ToolJob,
+        occupancy: Arc<std::sync::Mutex<Occupancy>>,
+    ) -> Result<Option<Opening>> {
+        let previous_epoch = self.previous.lock().await.get(&agent).copied();
+        let sent = Instant::now();
+        let answer = match self
+            .client
+            .open_hosting(
+                &HostingOpenRequest {
+                    agent,
+                    job: job.clone(),
+                    previous_epoch,
+                },
+                sent + DEFAULT_DEADLINE,
+            )
+            .await
+        {
+            Ok(answer) => answer,
+            Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => return Ok(None),
+            Err(ClientError::Refused(refusal)) => return Err(refusal_error(refusal)),
+            Err(error) => return Err(error.into()),
+        };
+        let answered = Answered {
+            sent,
+            server_now: answer.server_now,
+        };
+        let hold = self
+            .keeper
+            .hold_placement(answer.placement.clone(), answered, occupancy);
+        let writer = self
+            .keeper
+            .hold_writer(answer.volume, answer.writer, answered);
+        self.previous
+            .lock()
+            .await
+            .insert(agent, answer.placement.epoch);
+        self.heads.set(answer.volume, answer.head);
+        Ok(Some(Opening {
+            placement: answer.placement,
+            hold,
+            volume: answer.volume,
+            writer: Some(writer),
+            head: answer.head,
+            boot_set: answer.boot_set,
+            header: answer.header,
+            spec: answer.spec,
         }))
     }
 
-    /// Serve one tool call with its durable turn already resolved by the
-    /// caller, so the execution path needs no `request_turn_id` lookup.
+    /// Serve a job through the hosting actor.
     pub(crate) async fn call(
         self: &Arc<Self>,
         job: ToolJob,
-        turn: Option<MessageId>,
+        delivered_ns: Option<i64>,
     ) -> Result<()> {
-        let agent = match self.store.tool_agent(&job, self.node).await {
-            Ok(Some(agent)) => agent,
-            Ok(None) => return Ok(()),
-            // The store's fence check is the guard; read placements afterwards
-            // only to explain a refusal for a job fenced to another node.
-            Err(swarmy_store::StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)) => {
-                if let Some(dispatched) = self.store.tool_placement(job.request_id).await? {
-                    let current = self.store.get_by_agent(dispatched.agent_id).await?;
-                    if let Some(refusal) =
-                        crate::tools::placement_refusal(current.as_ref(), &dispatched, self.node)
-                    {
-                        return Err(refusal);
-                    }
-                }
-                return Err(swarmy_store::StoreError::Fence(
-                    swarmy_store::FenceError::PlacementMismatch,
-                )
-                .into());
-            }
-            Err(error) => return Err(error.into()),
+        let Some(agent) = self.route(&job).await? else {
+            return Ok(());
         };
         let (reply, response) = oneshot::channel();
         let (calls, activity) = {
@@ -191,6 +238,10 @@ impl Hosting {
                 .lock()
                 .await
                 .retain(|agent, _| live.contains(agent));
+            self.routes
+                .lock()
+                .await
+                .retain(|_, a| entries.contains_key(a) || *a == agent);
             let entry = entries.entry(agent).or_insert_with(|| {
                 let (calls, receive) = mpsc::channel(16);
                 let hosting = self.clone();
@@ -213,7 +264,7 @@ impl Hosting {
         calls
             .send(Call {
                 job,
-                turn,
+                delivered_ns,
                 reply,
                 activity,
             })
@@ -224,188 +275,238 @@ impl Hosting {
             .context("agent stopped serving; placement lease lost")?
     }
 
-    async fn placement(&self, agent: AgentId, job: &ToolJob) -> Result<PlacementRecord> {
-        let dispatched = self.store.tool_placement(job.request_id).await?;
-        let expiry = jiff::Timestamp::now().checked_add(self.lease)?;
-        let placement = match self.store.get_by_agent(agent).await? {
-            None => {
-                anyhow::ensure!(dispatched.is_none(), "dispatch placement was released");
-                self.store.place(agent, self.node, expiry).await?
-            }
-            Some(old) if old.expires_at <= jiff::Timestamp::now() => {
-                anyhow::ensure!(
-                    dispatched.is_none(),
-                    "dispatch placement expired; worker must recover the call"
-                );
-                self.store.take_over(&old, self.node, expiry).await?
-            }
-            Some(old) if old.node_id != self.node => bail!(
-                "agent is placed on another node {} at epoch {}",
-                old.node_id,
-                old.epoch
-            ),
-            Some(old) => {
-                anyhow::ensure!(
-                    dispatched
-                        .as_ref()
-                        .is_none_or(|expected| expected.epoch == old.epoch),
-                    "dispatch placement epoch changed"
-                );
-                if self.previous.lock().await.get(&agent) == Some(&old.epoch) {
-                    bail!(
-                        "placement epoch {} stopped; waiting for lease expiry before rebuilding",
-                        old.epoch
-                    );
-                }
-                self.store
-                    .renew(
-                        &old,
-                        expiry.max(old.expires_at.checked_add(Duration::from_millis(1))?),
-                    )
-                    .await?
-            }
-        };
-        self.store.claim_placement(&placement).await?;
-        self.previous.lock().await.insert(agent, placement.epoch);
-        Ok(placement)
-    }
-
     #[expect(
         clippy::cast_precision_loss,
         reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
     )]
-    fn observe_computer_boot(
+    fn report_ready(
         &self,
+        placement: PlacementRecord,
+        volume: VolumeId,
         session: SessionId,
         turn: Option<MessageId>,
-        volume: swarmy_core::VolumeId,
-        elapsed: f64,
+        times: BootTimes,
     ) {
-        let Some(turn) = turn else { return };
-        let store = self.store.clone();
+        let client = self.client.clone();
         let runtime = self.runtime.clone();
         tokio::spawn(async move {
-            if let Ok(stats) = runtime.volume_stats(volume).await {
-                store.observe_turn_metric(
-                    session,
-                    turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
-                        placement_ms: Some(elapsed),
-                        cold: Some(stats.fetched_chunks > 0),
-                        chunks_fetched: stats.fetched_chunks,
-                        bytes_fetched: stats.fetched_bytes,
-                        fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
-                        fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
-                        ..Default::default()
-                    }),
-                );
+            let metrics = if let Some(turn) = turn {
+                if let Ok(stats) = runtime.volume_stats(volume).await {
+                    vec![MetricBatch {
+                        session,
+                        turn,
+                        patches: vec![NodeMetric::Computer(swarmy_core::ComputerMetric {
+                            placement_ms: Some(times.placement),
+                            open_ms: Some(times.open),
+                            boot_ms: Some(times.boot),
+                            cold: Some(stats.fetched_chunks > 0),
+                            chunks_fetched: stats.fetched_chunks,
+                            bytes_fetched: stats.fetched_bytes,
+                            fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                            fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                            ..Default::default()
+                        })],
+                    }]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+            if let Err(error) = client
+                .hosting_ready(
+                    &HostingReadyRequest {
+                        placement,
+                        address: RuncRuntime::NETWORK_ADDRESS,
+                        metrics,
+                    },
+                    Instant::now() + DEFAULT_DEADLINE,
+                )
+                .await
+            {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "hosting ready report failed");
             }
         });
     }
 
     async fn boot_computer(
         &self,
-        agent: AgentId,
-        placement: &PlacementRecord,
-        first: &Call,
+        opening: &mut Opening,
         placement_started: Instant,
-    ) -> Result<()> {
-        let volume = self
-            .store
-            .agent_volume(first.job.session_id, placement)
-            .await?;
+        open_ms: f64,
+    ) -> Result<BootTimes> {
+        let grant = WriterGrant {
+            volume: opening.volume,
+            head: opening.head,
+            header: opening.header.clone(),
+            lease: opening.writer.take().context("writer grant already used")?,
+            renewal: None,
+        };
+        let booting = Instant::now();
         self.runtime
             .create(
-                self.sandbox_spec(agent, first.job.session_id).await?,
-                BlockDevice { volume_id: volume },
+                opening.spec.clone(),
+                BlockDevice {
+                    volume_id: opening.volume,
+                },
+                grant,
+                opening.boot_set.clone(),
             )
             .await?;
-        self.store
-            .set_placement_address(placement, RuncRuntime::NETWORK_ADDRESS)
-            .await?;
-        self.observe_computer_boot(
-            first.job.session_id,
-            first.turn,
-            volume,
-            placement_started.elapsed().as_secs_f64() * 1_000.0,
+        let boot_ms = booting.elapsed().as_secs_f64() * 1_000.0;
+        Ok(BootTimes {
+            placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
+            open: open_ms,
+            boot: boot_ms,
+        })
+    }
+
+    /// Claim the first call while its sandbox boots, then report readiness.
+    async fn first_call(
+        &self,
+        opening: &mut Opening,
+        first: Call,
+        placement_started: Instant,
+        open_ms: f64,
+    ) -> Result<()> {
+        let placement = opening.placement.clone();
+        let deadline = opening
+            .hold
+            .deadline()
+            .context("placement lease lost before the first claim")?;
+        let (booted, claimed) = tokio::join!(
+            self.boot_computer(opening, placement_started, open_ms),
+            crate::tools::claim(
+                &self.client,
+                &self.keeper,
+                &placement,
+                first.job.clone(),
+                deadline
+            ),
         );
+        let times = booted?;
+        let turn = claimed
+            .as_ref()
+            .ok()
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.turn);
+        self.report_ready(
+            placement.clone(),
+            opening.volume,
+            first.job.session_id,
+            turn,
+            times,
+        );
+        let session = first.job.session_id;
+        self.finish(&placement, first, claimed).await?;
+        self.record_boot_set(opening, session);
         Ok(())
     }
 
+    /// Record after the first committed call without delaying subsequent calls.
+    fn record_boot_set(&self, opening: &Opening, session: SessionId) {
+        let runtime = self.runtime.clone();
+        let client = self.client.clone();
+        let placement = opening.placement.clone();
+        let volume = opening.volume;
+        let head = opening.head;
+        tokio::spawn(async move {
+            let record = async {
+                let Some((key, set)) = store_boot_set(&runtime, volume).await? else {
+                    return Ok::<_, anyhow::Error>(());
+                };
+                client
+                    .report_boot_set(
+                        &HostingBootSetRequest {
+                            placement: placement.clone(),
+                            session,
+                            head,
+                            key: key.clone(),
+                        },
+                        Instant::now() + DEFAULT_DEADLINE,
+                    )
+                    .await?;
+                tracing::info!(agent = %placement.agent_id, chunks = set.chunks.len(), leaves = set.leaves.len(), %key, "boot set recorded");
+                Ok(())
+            };
+            match tokio::time::timeout(Duration::from_secs(30), record).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(error = %swarmy_core::error_chain(&*error), "boot set recording failed");
+                }
+                Err(error) => {
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "boot set recording failed");
+                }
+            }
+        });
+    }
+
+    /// A requirement release stops hosting between calls even if processes run:
+    /// card devices belong to the sandbox created for the old requirement.
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let Some(mut first) = calls.recv().await else {
             return Ok(());
         };
         first.activity.start(first.job.session_id);
         let placement_started = Instant::now();
-        let placement = match self.placement(agent, &first.job).await {
-            Ok(placement) => placement,
+        let mut opening = match self
+            .open(agent, &first.job, first.activity.state.clone())
+            .await
+        {
+            Ok(Some(opening)) => opening,
+            Ok(None) => {
+                ignore_best_effort(first.reply.send(Ok(())), "reply to completed call");
+                return Ok(());
+            }
             Err(error) => {
                 ignore_best_effort(first.reply.send(Err(error)), "reply to waiter");
                 return Ok(());
             }
         };
-        first
-            .activity
-            .state
-            .lock()
-            .expect("activity lock poisoned")
-            .placement = Some(placement.clone());
+        let open_ms = placement_started.elapsed().as_secs_f64() * 1_000.0;
         let mut shutdown = self.shutdown.subscribe();
+        let mut released = opening.hold.clone();
+        let mut lost = opening.hold.clone();
+        let lost = lost.lost();
+        tokio::pin!(lost);
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-            self.boot_computer(agent, &placement, &first, placement_started)
+            self.first_call(&mut opening, first, placement_started, open_ms)
                 .await?;
-            self.execute(&placement, first).await?;
+
             loop {
-                if *shutdown.borrow() {
+                if *shutdown.borrow() || opening.hold.release_requested() {
                     break;
                 }
                 tokio::select! {
                     call = calls.recv() => {
                         let Some(mut call) = call else { break; };
                         call.activity.start(call.job.session_id);
-                        self.execute(&placement, call).await?;
+                        self.execute(&opening.placement, &opening.hold, call).await?;
                     }
                     () = tokio::time::sleep(self.idle) => {
-                        if !crate::tools::has_processes(&self.runtime, &placement).await? { break; }
+                        if !crate::tools::has_processes(&self.runtime, &opening.placement).await? { break; }
                     },
                     _ = shutdown.changed() => break,
+                    () = released.released() => break,
                 }
             }
             Ok::<_, anyhow::Error>(())
         };
-        let renew = self.renew(placement.clone());
-        tokio::pin!(renew);
         let serving = tokio::select! {
             result = serving => result,
-            error = &mut renew => {
-                self.runtime.discard_if_present(agent).await?;
-                return Err(error);
+            reason = &mut lost => {
+                return Err(self.lease_lost(agent, &reason).await);
             }
         };
         // Keep renewing throughout the final checkpoint, which can take longer
         // than a lease on a heavily written disk.
-        let cleanup = async {
-            if self
-                .runtime
-                .list()
-                .await
-                .iter()
-                .any(|sandbox| sandbox.agent_id == agent)
-            {
-                self.runtime
-                    .destroy(swarmy_core::Sandbox { agent_id: agent })
-                    .await?;
-                self.store.release(&placement).await?;
-                self.previous.lock().await.remove(&agent);
-                self.computer_sampled.lock().await.remove(&agent);
-                tracing::info!(%agent, epoch = placement.epoch, reason = "eviction", "placement released");
-            } else {
-                self.runtime.discard_if_present(agent).await?;
-            }
-            Ok::<_, anyhow::Error>(())
+        let cause = if opening.hold.release_requested() {
+            "requirement change"
+        } else {
+            "eviction"
         };
+        let cleanup = self.stop_and_release(agent, &opening, cause);
         tokio::select! {
             result = cleanup => {
                 if let Err(error) = result {
@@ -413,36 +514,135 @@ impl Hosting {
                     return Err(error);
                 }
             },
-            error = &mut renew => {
-                self.runtime.discard_if_present(agent).await?;
-                return Err(error);
+            reason = &mut lost => {
+                return Err(self.lease_lost(agent, &reason).await);
             }
         }
         serving
     }
 
-    async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
+    /// Report a lost placement as soon as it is seen, then discard the agent's
+    /// local computer without publishing: another node may already own it.
+    async fn lease_lost(&self, agent: AgentId, reason: &str) -> anyhow::Error {
+        tracing::warn!(%agent, reason, "placement lease lost; discarding the local computer");
+        if let Err(error) = self.runtime.discard_if_present(agent).await {
+            return anyhow::Error::from(error).context("discard after placement lease loss");
+        }
+        anyhow::anyhow!("placement lease lost: {reason}")
+    }
+
+    /// Stop the agent's local sandbox and release its placement. A sandbox that
+    /// exists is destroyed, which publishes its final checkpoint; if that fails
+    /// the placement is kept so its expiry reports a possible computer loss.
+    /// A missing sandbox means the boot never finished and no guest command
+    /// ran, so once any partial local state is discarded nothing can still
+    /// write the disk and the placement is released too.
+    async fn stop_and_release(
+        &self,
+        agent: AgentId,
+        opening: &Opening,
+        cause: &'static str,
+    ) -> Result<()> {
+        let writer = self.keeper.writer_lease(opening.volume);
+        let hosted = self
+            .runtime
+            .list()
+            .await
+            .iter()
+            .any(|sandbox| sandbox.agent_id == agent);
+        if hosted {
+            self.runtime
+                .destroy(swarmy_core::Sandbox { agent_id: agent })
+                .await?;
+        } else {
+            self.runtime.discard_if_present(agent).await?;
+        }
+        let deadline = opening
+            .hold
+            .deadline()
+            .context("placement lease lost before close")?;
+        self.client
+            .close_hosting(
+                &HostingCloseRequest {
+                    placement: opening
+                        .hold
+                        .current()
+                        .context("placement lease lost before close")?,
+                    writer: writer.map(|lease| WriterToken {
+                        volume: opening.volume,
+                        lease,
+                    }),
+                },
+                deadline,
+            )
+            .await?;
+        self.heads.forget(opening.volume);
+        self.previous.lock().await.remove(&agent);
+        self.computer_sampled.lock().await.remove(&agent);
+        tracing::info!(%agent, epoch = opening.placement.epoch, reason = cause, booted = hosted, "placement released");
+        Ok(())
+    }
+
+    async fn execute(
+        &self,
+        placement: &PlacementRecord,
+        hold: &PlacementHold,
+        call: Call,
+    ) -> Result<()> {
+        let claimed = match hold.deadline() {
+            Some(deadline) => {
+                crate::tools::claim(
+                    &self.client,
+                    &self.keeper,
+                    placement,
+                    call.job.clone(),
+                    deadline,
+                )
+                .await
+            }
+            None => Err(anyhow::anyhow!("placement lease lost")),
+        };
+        self.finish(placement, call, claimed).await
+    }
+
+    async fn finish(
+        &self,
+        placement: &PlacementRecord,
+        call: Call,
+        claimed: Result<Option<Claimed>>,
+    ) -> Result<()> {
+        let claimed = match claimed {
+            Ok(Some(claimed)) => claimed,
+            Ok(None) => {
+                ignore_best_effort(call.reply.send(Ok(())), "reply to completed call");
+                return Ok(());
+            }
+            Err(error) => {
+                ignore_best_effort(call.reply.send(Err(error)), "reply to waiter");
+                bail!("tool execution interrupted; stopping agent");
+            }
+        };
         let mut shutdown = self.shutdown.subscribe();
         anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
         // Only the first completion per turn carries the computer re-sample;
         // later tools skip the volume stat read entirely. One entry per
         // agent keeps the map bounded for the life of the node process.
-        let needs_sample = match call.turn {
+        let needs_sample = match claimed.turn {
             Some(turn) => {
                 self.computer_sampled.lock().await.get(&placement.agent_id) != Some(&turn)
             }
             None => false,
         };
-        let turn = call.turn;
+        let turn = claimed.turn;
+        let metrics = crate::tools::CallMetrics {
+            turn,
+            needs_computer_sample: needs_sample,
+            delivered_ns: call.delivered_ns,
+            claimed_ns: claimed.stamp_ns,
+        };
         let result = tokio::select! {
-            result = crate::tools::execute(
-                &self.store,
-                self.runtime.clone(),
-                self.node,
-                placement,
-                call.job,
-                turn,
-                needs_sample,
+            result = crate::tools::run(
+                &self.client, &self.keeper, self.runtime.clone(), &self.heads, claimed, metrics,
             ) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };
@@ -463,80 +663,6 @@ impl Hosting {
         Ok(())
     }
 
-    async fn renew(&self, mut placement: PlacementRecord) -> anyhow::Error {
-        loop {
-            let remaining: Duration = placement
-                .expires_at
-                .duration_since(jiff::Timestamp::now())
-                .try_into()
-                .unwrap_or(Duration::ZERO);
-            // Reserve time to stop local processes even when the store hangs or
-            // a renewal acknowledgement arrives near the old lease deadline.
-            let budget = remaining.saturating_sub(remaining / 10);
-            let renewal = async {
-                tokio::time::sleep(self.lease.min(remaining) / 3).await;
-                let current = self
-                    .store
-                    .get_by_agent(placement.agent_id)
-                    .await?
-                    .context("placement missing during renewal")?;
-                // A worker or a changed grant can leave more time than the
-                // node requests. Preserve it and the store's strict increase.
-                let expiry = jiff::Timestamp::now()
-                    .checked_add(self.lease)?
-                    .max(current.expires_at.checked_add(Duration::from_millis(1))?);
-                // Keep the original epoch token even if the read saw a takeover.
-                Ok::<_, anyhow::Error>(self.store.renew(&placement, expiry).await?)
-            };
-            match tokio::time::timeout(budget, renewal).await {
-                Ok(Ok(current)) => placement = current,
-                Ok(Err(error)) => {
-                    return anyhow::anyhow!("placement lease renewal failed: {error}");
-                }
-                Err(_) => return anyhow::anyhow!("placement lease expired during renewal"),
-            }
-        }
-    }
-
-    /// Heartbeat observations expire independently of placement authority.
-    pub(crate) async fn report_status(&self, lifetime: Duration) -> Result<()> {
-        let observed_at = jiff::Timestamp::now();
-        let expires_at = observed_at.checked_add(lifetime)?;
-        let observations: Vec<_> = self
-            .entries
-            .lock()
-            .await
-            .values()
-            .filter(|entry| !entry.task.is_finished())
-            .filter_map(|entry| {
-                let activity = entry.activity.lock().expect("activity lock poisoned");
-                activity
-                    .placement
-                    .as_ref()
-                    .map(|placement| AgentCallStatus {
-                        agent_id: placement.agent_id,
-                        node_id: self.node,
-                        epoch: placement.epoch,
-                        holder_session_id: activity.holder,
-                        queued_calls: activity.queued,
-                        observed_at,
-                        expires_at,
-                    })
-            })
-            .collect();
-        for status in observations {
-            match self.store.put_agent_call_status(&status).await {
-                Ok(())
-                | Err(
-                    swarmy_store::StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)
-                    | swarmy_store::StoreError::Domain(swarmy_store::DomainError::ComputerDeleted),
-                ) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) async fn shutdown(&self) {
         self.shutdown.send_replace(true);
         let entries = std::mem::take(&mut *self.entries.lock().await);
@@ -544,5 +670,22 @@ impl Hosting {
             ignore_best_effort(entry.task.await, "await background task");
         }
         self.computer_sampled.lock().await.clear();
+        self.routes.lock().await.clear();
     }
 }
+
+pub(crate) fn refusal_error(refusal: NodeRefusal) -> anyhow::Error {
+    match refusal {
+        NodeRefusal::PlacedElsewhere { node, epoch } => {
+            anyhow::anyhow!("agent is placed on another node {node} at epoch {epoch}")
+        }
+        NodeRefusal::EpochStopped { epoch } => anyhow::anyhow!(
+            "placement epoch {epoch} stopped; waiting for lease expiry before rebuilding"
+        ),
+        other => anyhow::anyhow!("node API refused: {other}"),
+    }
+}
+
+#[cfg(test)]
+#[path = "hosting_tests.rs"]
+pub(crate) mod tests;

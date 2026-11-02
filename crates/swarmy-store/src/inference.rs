@@ -364,6 +364,13 @@ impl Store {
                 )
                 .await?;
                 self.record_cache_affinity(&trx, completion, now)?;
+                // A completed attempt ends the turn's inference wait and restarts
+                // the route chain. Doing it in this commit matters: once the
+                // completion lands, the next turn can fail and park again, and a
+                // later separate clear would delete that new wait and leave the
+                // session sleeping with nothing to wake it.
+                self.clear_inference_wait_in(&trx, claim.session_id).await?;
+                session.route_step = 0;
             }
             trx.set(&self.keys().event(claim.session_id, head), event);
             trx.set(&self.keys().inference_result(claim.request_id), response);

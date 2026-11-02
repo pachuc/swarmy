@@ -56,9 +56,18 @@ pub struct InferenceMetric {
 pub struct ToolMetric {
     pub request_id: String,
     pub name: String,
+    /// Worker clock: the worker dispatched the call.
     pub dispatched_ns: Option<i64>,
+    /// Node clock: the node started handling the NATS delivery.
+    pub delivered_ns: Option<i64>,
+    /// Node clock: the node's tool claim committed.
+    pub claimed_ns: Option<i64>,
+    /// Node clock: the sandbox command started.
     pub started_ns: Option<i64>,
+    /// Node clock: the node stamped `ToolCompleted` right after its completion commit.
     pub completed_ns: Option<i64>,
+    /// Worker clock: the worker claimed the step that folds this result.
+    pub woken_ns: Option<i64>,
     pub exit_status: Option<i32>,
     pub output_bytes: Option<u64>,
     pub queue_ms: Option<f64>,
@@ -87,6 +96,18 @@ pub struct ComputerMetric {
     /// Fetch p95 re-sampled after the first tool call completes.
     #[serde(default)]
     pub first_tool_fetch_p95_ms: Option<f64>,
+    /// Milliseconds from placement start through volume binding and spec read.
+    #[serde(default)]
+    pub open_ms: Option<f64>,
+    /// Milliseconds spent creating the sandbox, including volume attach.
+    #[serde(default)]
+    pub boot_ms: Option<f64>,
+    /// Bytes fetched by the boot-set prefetch for this boot.
+    #[serde(default)]
+    pub prefetch_bytes: Option<u64>,
+    /// Milliseconds the boot-set prefetch ran; absent while it is running.
+    #[serde(default)]
+    pub prefetch_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]

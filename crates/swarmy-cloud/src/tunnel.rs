@@ -21,6 +21,81 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+/// The SSH target for a recorded host: public address first, then private;
+/// known hosts live next to the key.
+#[must_use]
+pub fn host_target(host: &swarmy_config::swarm::RecordedHost) -> SshTarget {
+    let mut addresses = vec![host.public_address.clone()];
+    if let Some(private) = &host.private_address {
+        addresses.push(private.clone());
+    }
+    SshTarget {
+        addresses,
+        user: host.ssh_user.clone(),
+        key: host.ssh_key.clone(),
+        known_hosts: host.ssh_key.with_extension("known_hosts"),
+    }
+}
+
+/// Open or reuse the per-swarm tunnel to the services host and return the
+/// local URL of the forwarded API port.
+/// # Errors
+/// SSH failures, or a tunnel record without an API port.
+pub async fn open_api(
+    tunnels: &Tunnels,
+    swarm: &str,
+    dir: &Path,
+    host: &swarmy_config::swarm::RecordedHost,
+) -> Result<String> {
+    let opened = tunnels
+        .open(&Request {
+            dir,
+            target: host_target(host),
+            placement: Placement::Remote,
+            remote_ports: StackPorts::default(),
+        })
+        .await
+        .map_err(|error| {
+            Error::context(error, format!("opening the SSH tunnel to swarm {swarm}"))
+        })?;
+    opened
+        .record
+        .api_url()
+        .ok_or_else(|| Error::other(format!("the tunnel to swarm {swarm} forwards no API port")))
+}
+
+/// The URL and token of a resolved API, opening the swarm's SSH tunnel when
+/// the swarm serves its API over SSH.
+/// # Errors
+/// SSH failures from `open_api`.
+pub async fn api_endpoint(
+    tunnels: &Tunnels,
+    api: swarmy_client::api_client::Api,
+) -> Result<(String, String)> {
+    match api {
+        swarmy_client::api_client::Api::Direct { url, token } => Ok((url, token)),
+        swarmy_client::api_client::Api::Tunnel {
+            swarm,
+            dir,
+            host,
+            token,
+        } => {
+            let url = open_api(tunnels, &swarm, &dir, &host).await?;
+            Ok((url, token))
+        }
+    }
+}
+
+/// Resolve the API every client command uses, open its tunnel when needed and
+/// connect. `flag` is the `--swarm` value, if any.
+/// # Errors
+/// Target resolution, SSH and client construction failures.
+pub async fn connect(flag: Option<&str>) -> Result<(swarmy_client::Client, String)> {
+    let api = swarmy_client::api_client::resolve(flag)?;
+    let (url, token) = api_endpoint(&Tunnels::ssh(), api).await?;
+    Ok(swarmy_client::api_client::connect_to(&url, token)?)
+}
+
 /// Remote ports of a host's backing stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -588,6 +663,78 @@ mod tests {
             }
         }
     }
+    fn recorded_host(root: &Path) -> swarmy_config::swarm::RecordedHost {
+        swarmy_config::swarm::RecordedHost {
+            provisioned: false,
+            name: "box".into(),
+            public_address: "127.0.0.1".into(),
+            private_address: None,
+            ssh_user: "test".into(),
+            ssh_key: root.join("key"),
+        }
+    }
+
+    #[tokio::test]
+    async fn open_api_uses_recorded_api_port() {
+        let fixture = Fixture::new();
+        let dir = fixture.dir("tunnel");
+        let host = recorded_host(fixture.root.path());
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let url = open_api(&tunnels, "fixture", &dir, &host).await.unwrap();
+        let port = url
+            .strip_prefix("http://127.0.0.1:")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        assert_ne!(port, 0);
+        assert!(dir.join("tunnel.json").exists());
+        tunnels.disconnect(&dir).await.unwrap();
+    }
+
+    #[test]
+    fn host_target_address_order_and_known_hosts() {
+        let mut host = recorded_host(Path::new("/keys"));
+        host.public_address = "203.0.113.10".into();
+        host.private_address = Some("203.0.113.11".into());
+        let target = host_target(&host);
+        assert_eq!(target.addresses, ["203.0.113.10", "203.0.113.11"]);
+        assert_eq!(target.known_hosts, Path::new("/keys/key.known_hosts"));
+    }
+
+    #[tokio::test]
+    async fn api_endpoint_returns_a_direct_api_unchanged() {
+        let api = swarmy_client::api_client::Api::Direct {
+            url: "http://127.0.0.1:9".into(),
+            token: "t".into(),
+        };
+        let result = api_endpoint(&Tunnels::with_program("/nonexistent/ssh"), api)
+            .await
+            .unwrap();
+        assert_eq!(result, ("http://127.0.0.1:9".into(), "t".into()));
+    }
+
+    #[tokio::test]
+    async fn api_endpoint_opens_the_tunnel_for_an_ssh_swarm() {
+        let fixture = Fixture::new();
+        let dir = fixture.dir("tunnel");
+        let api = swarmy_client::api_client::Api::Tunnel {
+            swarm: "fixture".into(),
+            dir: dir.clone(),
+            host: Box::new(recorded_host(fixture.root.path())),
+            token: "secret".into(),
+        };
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let (url, token) = api_endpoint(&tunnels, api).await.unwrap();
+        let port = url
+            .strip_prefix("http://127.0.0.1:")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        assert_ne!(port, 0);
+        assert_eq!(token, "secret");
+        tunnels.disconnect(&dir).await.unwrap();
+    }
+
     #[test]
     fn placement_selects_forwards() {
         assert_eq!(Placement::Remote.services(), vec![Service::Api]);

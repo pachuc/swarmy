@@ -19,14 +19,27 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{DomainError, FenceError, MAX_SCAN_LIMIT, Store, StoreError};
 use futures::{StreamExt, TryStreamExt, stream};
 use jiff::Timestamp;
 use object_store::{ObjectStore, path::Path};
 use swarmy_config::GarbageCollection;
 use swarmy_core::{ContentHash, GcRun, LeaseOwnerId, ManifestId};
-use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
 
-use crate::{Manifest, Result, VolumeError, chunk_path};
+use swarmy_volume::{Manifest, VolumeError, chunk_path};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CollectError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Volume(#[from] VolumeError),
+    #[error(transparent)]
+    ObjectStore(#[from] object_store::Error),
+    #[error("invalid garbage collection policy or reference allocation failed")]
+    InvalidPolicy,
+}
+type Result<T> = std::result::Result<T, CollectError>;
 
 const LEASE_SECONDS: i64 = 120;
 const RENEW_SECONDS: u64 = 30;
@@ -97,13 +110,13 @@ pub async fn begin_with_owner(
         duration_ms: 0,
     };
     let grace =
-        i64::try_from(policy.grace_secs.as_secs()).map_err(|_| VolumeError::InvalidGcPolicy)?;
+        i64::try_from(policy.grace_secs.as_secs()).map_err(|_| CollectError::InvalidPolicy)?;
     let cutoff = run
         .started_at
         .as_second()
         .checked_sub(grace)
-        .ok_or(VolumeError::InvalidGcPolicy)?;
-    let cutoff = Timestamp::from_second(cutoff).map_err(|_| VolumeError::InvalidGcPolicy)?;
+        .ok_or(CollectError::InvalidPolicy)?;
+    let cutoff = Timestamp::from_second(cutoff).map_err(|_| CollectError::InvalidPolicy)?;
     let lease = store.acquire_gc_lease(&run, expiry()?).await?;
     Ok((run, lease, cutoff, started))
 }
@@ -131,16 +144,16 @@ pub async fn complete(
         loop {
             tokio::select! {
                 biased;
-                () = tokio::time::sleep_until(deadline) => break Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch).into()),
+                () = tokio::time::sleep_until(deadline) => break Err(StoreError::Fence(FenceError::GcLeaseMismatch).into()),
                 _ = renewal.tick() => {
                     let next_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
                     let renewed = tokio::time::timeout_at(deadline, async {
-                        Ok::<_, VolumeError>(store.renew_gc_lease(&lease, expiry()?).await?)
+                        Ok::<_, CollectError>(store.renew_gc_lease(&lease, expiry()?).await?)
                     }).await;
                     match renewed {
                         Ok(Ok(next)) => { lease = next; deadline = next_deadline; }
                         Ok(Err(error)) => break Err(error),
-                        Err(_) => break Err(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch).into()),
+                        Err(_) => break Err(StoreError::Fence(FenceError::GcLeaseMismatch).into()),
                     }
                 }
                 result = &mut work => break result,
@@ -171,7 +184,7 @@ pub async fn complete(
 
 fn expiry() -> Result<Timestamp> {
     Timestamp::from_second(Timestamp::now().as_second() + LEASE_SECONDS)
-        .map_err(|_| VolumeError::InvalidGcPolicy)
+        .map_err(|_| CollectError::InvalidPolicy)
 }
 
 async fn mark(
@@ -180,9 +193,10 @@ async fn mark(
     references: &mut References,
     id: ManifestId,
 ) -> Result<()> {
-    let header = store.get_manifest(id).await?.ok_or(StoreError::Domain(
-        swarmy_store::DomainError::ManifestMissing,
-    ))?;
+    let header = store
+        .get_manifest(id)
+        .await?
+        .ok_or(StoreError::Domain(DomainError::ManifestMissing))?;
     let manifest = Manifest::load(objects, header).await?;
     for (index, hash) in manifest.leaf_hashes().iter().enumerate() {
         if *hash != ContentHash::ZERO {
@@ -346,7 +360,7 @@ impl References {
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(size)
-            .map_err(|_| VolumeError::InvalidGcPolicy)?;
+            .map_err(|_| CollectError::InvalidPolicy)?;
         bytes.resize(size, 0);
         Ok(Self { bytes })
     }

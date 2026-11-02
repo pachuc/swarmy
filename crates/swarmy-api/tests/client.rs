@@ -130,6 +130,8 @@ async fn assert_agent_routes(client: &Client) {
 
             memory_mib: None,
             gpu: None,
+            allow_gpu_request: None,
+            gpu_reason: None,
             github_token: None,
         })
         .await
@@ -151,6 +153,8 @@ async fn assert_agent_routes(client: &Client) {
 
                     memory_mib: None,
                     gpu: None,
+                    allow_gpu_request: None,
+                    gpu_reason: None,
                     resets: Vec::new(),
                     github_token: None,
                     clear_github_token: false,

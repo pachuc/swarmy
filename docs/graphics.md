@@ -1,25 +1,65 @@
 # Desktop graphics and image inputs
 
-## What the desktop image gives an agent
+## What the desktop images give an agent
 
-`base-desktop` gives an agent a browser, an X11 desktop and software-rendered
-OpenGL and Vulkan. It requires no GPU. Mesa is the standard open-source OpenGL and Vulkan implementation on Linux;
-its llvmpipe (OpenGL) and lavapipe (Vulkan) drivers run on the CPU. GPU
-rendering is not covered here.
+`base-desktop` and `swarmy-dev` both give an agent a browser, an X11 desktop,
+and OpenGL and Vulkan through one shared setup script,
+`images/common/desktop-setup.sh`. `base-desktop` adds Blender. `swarmy-dev`
+adds the Rust toolchain and is the image every fleet worker runs. Without a
+GPU, rendering runs on the CPU through Mesa's llvmpipe and lavapipe. Mesa is
+the standard open-source OpenGL and Vulkan implementation on Linux. In a
+sandbox with a card, the display runs on the card instead. Text uses DejaVu
+and Liberation, plus WenQuanYi Micro Hei for Chinese, Japanese and Korean, so
+CJK pages render in screenshots instead of empty boxes. It adds about 5 MB to
+the image; Noto CJK would add about 91 MB. Japanese kanji draw in Chinese
+glyph forms.
+
+## GPU sandboxes
+
+On a GPU node, a sandbox with a GPU requirement sees the node's NVIDIA cards ([GPU nodes](swarms.md#gpu-nodes)). The device nodes let any process in the sandbox run work on the card and see other processes using it; the driver keeps their memory apart. For a fleet of the owner's own agents this is acceptable; use `dedicated` when a sandbox must not share the card. The display stack described below still renders in software.
 
 ## The display image
 
 Xvfb is an X11 display server that draws into memory, rather than on a physical
-monitor. This image runs Xvfb on `:99` at 1280x800 and 24-bit color. Openbox is a small window manager: it places and decorates windows so desktop
-programs behave normally. The sandbox's first process (PID 1) is a small
-supervisor that restarts Xvfb if it exits; `/etc/swarmy/environment` supplies `DISPLAY` and software-renderer
-settings to container processes.
+monitor. Each image runs Xvfb on `:99` at 1280x800 and 24-bit color on the
+software path. Openbox places and decorates windows. PID 1 first runs
+`/usr/local/libexec/swarmy-display-select`, writes the answer to
+`/run/swarmy-display/renderer`, and keeps the chosen display alive.
 
 The recipe's `[sandbox] display = true` becomes the stored `image_display` flag.
 It also installs a checksum-verified, pinned Chromium snapshot, not Ubuntu's
 snap-based Chromium package. Chromium binds its debugging port only to
 `127.0.0.1:9222` inside the sandbox. Build and inspect the image following
 [the image README](../images/base-desktop/README.md).
+
+## The GPU display and the software fallback
+
+The images install no NVIDIA package. CDI (Container Device Interface) describes
+the device nodes and library mounts a container needs. On a GPU node, the
+sandbox's CDI edits mount the host driver's GLX and EGL libraries, `nvidia_drv.so`,
+`libglxserver_nvidia.so`, `nvidia_icd.json`, and `10_nvidia.json` into it.
+The selector chooses `nvidia` only when `/dev/nvidia0`, the X driver, the X GLX
+module, and the GLX client library are all present. Otherwise it chooses
+`software`.
+
+For NVIDIA, PID 1 runs Xorg as container root using
+`/etc/X11/swarmy-nvidia.conf`, a 1280x800 virtual screen,
+and `AllowEmptyInitialConfiguration`; it sets no `UseDisplayDevice`, because the driver rejects `"None"` together with a virtual screen on an L4. Its log is
+`/run/swarmy-display/Xorg.99.log`. The software Xvfb path is unchanged.
+The glvnd dispatch library routes OpenGL calls to the vendor selected by the
+X server. The Vulkan loader reads ICD files, small JSON descriptions of driver
+libraries, and offers the devices those drivers report.
+
+`/etc/swarmy/environment` sets `DISPLAY`, `LIBGL_ALWAYS_SOFTWARE`, and
+`GALLIUM_DRIVER`. Only Mesa reads the last two, so NVIDIA's libraries ignore
+them. Vulkan is not pinned: NVIDIA's Vulkan driver is visible in a GPU sandbox,
+and lavapipe is the only device in a CPU sandbox. The `chromium` wrapper pins
+Chromium to software rendering only on the software display. An agent can run
+`cat /run/swarmy-display/renderer` to check the choice.
+
+The NVIDIA path ran on an AWS g6.xlarge (one L4) in the GPU end-to-end runs
+of October and November 2026: `glxinfo -B` reported `NVIDIA L4/PCIe/SSE2`. If Xorg keeps failing there, PID 1 keeps restarting it
+and the renderer file still says `nvidia`; there is no silent fallback.
 
 ## Browser and screen tools
 
@@ -61,9 +101,24 @@ The recipe defaults to 3072 MiB; `swarmy agent create --memory` can override
 it. The node reserves that amount against its capacity. Chromium dominates
 memory use; Xvfb's 1280x800x24 framebuffer is about 4 MB and Blender adds its
 own usage. The desktop proof records the sandbox's `memory.peak` in its
-`summary.json` evidence. No GPU memory is involved.
+`summary.json` evidence. On the software display no GPU memory is involved. On the NVIDIA display the X framebuffer and GPU programs use card memory.
 
 ## How it is verified
+
+`python3 -m unittest discover -s images/common/tests -p 'test_*.py'` runs the
+selector against a fake `/dev` and fake library directories. The last step of
+the desktop proof checks the renderer file, `glxinfo -B`, and
+`vulkaninfo --summary` on the software path.
+
+
+`scripts/node-suites/gpu-proof.sh --swarm NAME --provider ID --model ID --image NAME:TAG`
+runs a throwaway GPU agent on a swarm with a GPU group. It checks that the
+renderer file says `nvidia`, `glxinfo -B` does not report `llvmpipe`, and
+`nvidia-smi` names the card and shows memory in use while `glxgears` runs.
+It also checks that `screen_windows` lists the `glxgears` window and
+`screen_screenshot` returns a non-blank PNG. Evidence goes to
+`~/.local/state/swarmy/gpu-proof/AGENT/`. Inside a sandbox `nvidia-smi` usually
+lists no processes; the summary records whether it did.
 
 `python3 images/base-desktop/tests/browser-helper.py` checks the helper against
 a fake CDP endpoint without a display. `python3
@@ -86,4 +141,4 @@ scripts/desktop-agent-check.sh --swarm NAME --provider anthropic --model MODEL
 
 ## Not covered
 
-GPU scenarios, audio and multiple displays are separate work.
+Audio and multiple displays are separate work. The NVIDIA display path is validated only by the elastic GPU end-to-end acceptance on an L4.

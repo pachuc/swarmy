@@ -211,7 +211,7 @@ impl VolumeDevice {
 
     async fn upload_boundary(&self, number: u64) -> Result<()> {
         let _priority = self.admit_upload().await;
-        let mut bytes = self.chunk(number, false).await?.to_vec();
+        let mut bytes = self.chunk_without_recording(number).await?.to_vec();
         let generation = {
             let mut dirty = self.lock_upload_dirty().await;
             let boundary = dirty.boundary.as_mut().expect("uploads run only for chunks publish placed in the boundary map, which lives until every upload completes");

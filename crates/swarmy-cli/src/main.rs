@@ -13,6 +13,7 @@ mod gc;
 mod image;
 mod image_command;
 mod local;
+mod machines;
 mod models;
 mod models_probe;
 mod models_probe_command;

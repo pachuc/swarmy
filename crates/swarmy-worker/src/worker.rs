@@ -151,6 +151,7 @@ pub(crate) struct Worker {
     placements: crate::placement::Cache,
     snapshots: Mutex<HashMap<String, Snapshot>>,
     display: Mutex<DisplayCache>,
+    republish: republish::Republish,
     pub owner: LeaseOwnerId,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     #[cfg(test)]
@@ -168,6 +169,7 @@ impl Worker {
             placements: crate::placement::Cache::default(),
             snapshots: Mutex::default(),
             display: Mutex::default(),
+            republish: republish::Republish::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
             clock: Arc::new(Timestamp::now),
             #[cfg(test)]
@@ -226,6 +228,7 @@ impl Worker {
             }
             Err(error) => return Err(error.into()),
         };
+        let woken_ns = i64::try_from(Timestamp::now().as_nanosecond()).ok();
         tracing::info!(session_id = %id, owner = %lease.owner, step = lease.seq, "claimed step");
         if let Some(turn) = turn {
             let event = Bus::turn_event(id, turn, TurnStage::Claimed, None);
@@ -239,6 +242,7 @@ impl Worker {
             snapshot: None,
             events,
             turn,
+            woken_ns,
         };
         let heartbeat_lease = ctx.lease.clone();
         let period = (self.config.lease_duration / 3).min(self.config.bus.ack_wait / 3);
@@ -280,6 +284,7 @@ mod handoff;
 mod inference;
 mod inflight;
 mod overflow;
+pub(crate) mod republish;
 mod step;
 mod summarize;
 #[cfg(test)]

@@ -163,7 +163,7 @@ GET /v1/sessions/{id} removes archived from response properties
 # - `volume_snapshots.period_seconds` moves to `volume_snapshots.period_secs`
 # - `gc.grace_seconds` moves to `gc.grace_secs`
 # - `gc.interval_seconds` moves to `gc.interval_secs`
-# - `inference.max_wait_seconds` moves to `inference.max_wait_secs`
+# - `inference.max_wait_seconds` moves to `scheduler.max_session_wait_secs`
 # - `inference.max_backoff_seconds` moves to `inference.max_backoff_secs`
 # - `inference.gateway_wait_seconds` moves to `inference.gateway_wait_secs`
 # Logging: api, scheduler, and gateway used to log to stdout with ANSI colour;
@@ -198,3 +198,49 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 # 2026-10-26: swarmy swarm scale NAME GROUP COUNT grows or shrinks a node group; shrinking drains the removed nodes (highest-numbered first) before destroying or cleaning them. swarm up still refuses a hand-lowered count and now points at swarm scale. No /v1 change.
 # 2026-10-28: Message parts gain notice kind model_handoff, and stored inference jobs gain a trailing summary_handoff field. Older binaries cannot decode logs containing the new kind or jobs carrying the field; upgrade API servers, CLI clients, chaos checkers, gateways and workers together. No /v1 schema change.
 # 2026-10-28: API Model responses gain required input_modalities; swarmy CLI clients need an API server from the same build. /v1 response schema change.
+# 2026-10-29: Session waits replace inference waits. The store families inference_wait and inference_wait_due become session_wait and session_wait_due, and each wait records its kind (inference or capacity). Placement hosting rows gain a trailing release request, and a new placement_next_reason key records why the next placement happens. Older binaries cannot read these rows: wipe the development store and upgrade every service and node together. [inference] max_wait_secs (SWARMY_INFERENCE_MAX_WAIT_SECONDS) moves to [scheduler] max_session_wait_secs (SWARMY_MAX_SESSION_WAIT_SECONDS) and now also bounds capacity waits; the 2026-09 config migration writes the new key directly. Changing an agent's GPU requirement while its computer is placed no longer returns agent_computer_placed; the node releases the computer instead. A memory change still does. No /v1 schema change.
+# 2026-10-29: Node records gain a trailing gpu field (advertised cards) and placement records a trailing gpu mode. Older binaries cannot decode either; wipe the development store and upgrade every service and node together. /v1 additive: DoctorNode.gpu, PlacementView.gpu and the GpuCards schema.
+# 2026-10-29: New store families machine, machine_assignment, machine_assignment_by_agent, machine_assignment_open and machine_by_group (new rows only). GET /v1/machines is a new route. swarmy cost --json gains a top-level machines field when no key filter is given, and swarmy swarm machines lists elastic machines. No /v1 break.
+# 2026-10-29: Agent records gain trailing allow_gpu_request and gpu_request fields. Older binaries cannot decode agent rows written after this change: wipe the development store and upgrade every service and node together. New agent tools request_gpu and release_gpu, offered only to agents with allow_gpu_request. /v1 additive: Agent.allow_gpu_request, Agent.gpu_request, the GpuRequestView schema, and optional allow_gpu_request on CreateAgent and UpdateAgent.
+# 2026-10-29: Swarm spec groups gain elastic, max, price_per_hour and currency; swarm up, plan, upgrade and down skip elastic groups for OpenTofu and swarm scale sets their desired count through the new routes GET/PUT /v1/swarm/groups/{group} and PUT /v1/swarm/groups/{group}/desired. Stored CredentialKind gains MachineProvider and the API CredentialKind gains machine_provider; older binaries cannot decode such an entry. New store family elastic_group. Additive /v1 change.
+# 2026-10-29: New binary swarmy-provisioner, installed with unit swarmy-provisioner.service on the primary only; the core release archive also carries it. New store families elastic_creations, provisioner_lease and provisioner_sequence; the collector lease now shares its claim logic with the provisioner lease without changing format. The provisioner writes machine ledger records for elastic groups. No /v1 change.
+# 2026-10-29: Elastic group definitions gain trailing primary_address and service_user. PUT /v1/swarm/groups/{group} requires both and swarmy swarm scale sends them. Older binaries cannot decode elastic_group rows written after this change: wipe the development store. GPU placements on joined elastic machines now write machine assignment intervals. The route is new relative to master, so no oasdiff line is expected.
+# 2026-10-29: Elastic group definitions gain a trailing autoscale flag and elastic group records replace desired_reason with desired_cause (agent, session, reason). Older binaries cannot decode elastic_group rows written after this change: wipe the development store. Swarm spec groups gain autoscale (elastic groups only, at most one per swarm). PUT /v1/swarm/groups/{group} accepts optional autoscale; the ElasticGroup view gains autoscale, desired_agent and desired_session. swarmy swarm down turns autoscale off before setting desired to 0. Additive /v1 change.
+
+# 2026-10-29: An operator can give a GPU reason: swarmy agent create|set --gpu shared|dedicated --gpu-reason TEXT (1-500 characters; refused without a shared or dedicated --gpu). It is stored as the agent's gpu_request, whose session_id is now optional (absent for an operator reason); an operator GPU change without a reason still clears it. Older binaries cannot decode agent rows that carry a gpu_request: wipe the development store and upgrade every service and node together. /v1 additive relative to master: optional gpu_reason on CreateAgent and UpdateAgent; GpuRequestView.session_id is optional (the schema is new on this branch).
+
+# 2026-10-31: New store family node_credential (new rows only). acquire_writer_lease and release_writer_lease use the store clock; claims and writer leases match by identity. No stored format change, no /v1 change.
+# 2026-10-31: Stored turn_tool rows gain trailing delivered_ns, claimed_ns and woken_ns, and turn_computer rows gain trailing open_ms and boot_ms. Metric rows written before this change no longer decode and older binaries cannot read new ones: wipe the development store and upgrade every service and node together. /v1 additive: ToolMetric.delivered_ns, claimed_ns, woken_ns and ComputerMetric.open_ms, boot_ms.
+
+# 2026-10-31: New service role swarmy-core node-api (crates swarmy-node-api and swarmy-node-protocol) and command swarmy-core node-credential issue|revoke. ServiceRole gains node_api, appended last, so stored service heartbeats stay readable. New settings [node_api] listen, [node] api_url, [node] token_file. /v1 additive: DoctorService.role may be node_api.
+
+# 2026-10-31: Node API gains POST /node/v1/sync (internal contract, not /v1). ToolMetric and ComputerMetric move to swarmy-core and stay re-exported by swarmy-store; no stored format change.
+
+# 2026-10-31: Node API gains tool/route, hosting/open, hosting/ready, hosting/close, volume/publish, volume/protect and credentials/github (internal contract, not /v1). New store functions sandbox_spec and open_writer_lease; no stored format change.
+
+# 2026-10-31: Provisioning issues node API tokens at join (/etc/swarmy/node-token), adds the 8743 node API tunnel forward and swarmy-node-api.service on stack hosts, permits 8333 only without a bucket, and matches tunnel key lines by key. Existing hosts are unchanged until swarm upgrade learns the node API (NA11).
+
+# 2026-11-01: Node API gains tool/claim and tool/complete (internal contract, not /v1); the node-api service connects to NATS. A same-owner claim repeat raises the stored claim expiry; no stored format change.
+
+# 2026-11-01: Computer metrics gain prefetch_bytes and prefetch_ms (additive in /v1; the stored computer row layout changes with the batch's metrics break). Node API gains hosting/boot-set and fills hosting/open's boot_set. New store key family boot_set.
+
+# 2026-11-01: swarmyd registers, renews leases and opens hosting through the node API; a node needs [node] api_url and token_file. No stored format change.
+
+# 2026-11-01: swarmyd claims and completes tool calls through the node API (tool/claim, tool/complete), pulls 16 node tool jobs per NATS pull, and no longer publishes ToolCompleted or nudges; ToolMetric.completed_ns is the primary's commit time. No stored format change.
+
+# 2026-11-01: Node API gains volume/release (internal). The node control socket's Create and Resume carry a caller-acquired writer lease (WriterOpening moves to swarmy-core); swarmyd opens no store. No stored format change.
+
+# 2026-11-01: The node agent is the swarmy-node binary (package swarmyd); swarmy-core has no node role. swarmy-core vol is unchanged for users. Provisioned hosts need NA11 to switch their units.
+
+# 2026-11-01: Provisioning runs swarmyd.service as /usr/local/bin/swarmy-node; node-only hosts get no swarmy-core, libfdb_c.so, linker drop-in, backing tools, cluster file or 4500 forward; the primary no longer permits 4500 for node keys. The core release bundle carries swarmy-node. Existing hosts move with swarm upgrade (NA11b).
+
+# 2026-11-01: swarm upgrade upgrades the primary first, installs swarmy-node-api.service on stacks with services, issues node tokens to hosts without one, manages SWARMY_NODE_API_URL and SWARMY_NODE_TOKEN_FILE in node.env (and drops the FoundationDB lines on node hosts), restarts a node host's tunnel with its node, and removes FoundationDB leftovers from node hosts. swarmy doctor requires a node-api heartbeat.
+# 2026-11-01: The latency suite gates warm tool call overhead (1 s at 175 ms, 2 s at 400 ms), cold start (60 s at 175 ms) and every node API request (one round trip plus 150 ms). The node dependency check covers swarmy-volume and swarmy-sandbox. The store caller audit found no unused node-only functions to remove.
+
+# 2026-11-02: swarmy-auth gains --swarm and opens the SSH tunnel for swarms served over SSH; the CLI passes its --swarm to the helper. Unused api_client::connect and NeedsTunnel are removed. No stored format or /v1 change.
+
+# 2026-11-02: swarmy-node --check-config; configuration file errors name the file and removed keys with replacements; swarm upgrade checks host configuration before installing and includes the host's last stderr lines on failure. No stored format or /v1 change.
+
+# 2026-11-02: The swarmy-dev recipe adds openssh-client and libgl-dev; scripts/node-suites/gpu-proof.sh adds an operator GPU proof. No stored format or /v1 change.
+
+2026-11-02: Swarm spec groups gain optional node_memory_mib; new store families elastic_group_node_memory and capacity_shortfall hold only new rows (no stored format change or wipe). /v1 adds optional node_memory_mib to PutElasticGroup and ElasticGroup; PUT /v1/swarm/groups/{group} refuses autoscale without a given or recorded size.

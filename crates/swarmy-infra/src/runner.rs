@@ -6,6 +6,7 @@ use std::{
 };
 use tokio::{fs, process::Command};
 pub const VARIABLES_FILE: &str = "swarmy.tfvars.json";
+pub const STATE_FILE: &str = "terraform.tfstate";
 const PASSTHROUGH: &[&str] = &[
     "PATH",
     "HOME",
@@ -22,58 +23,74 @@ const PASSTHROUGH: &[&str] = &[
     "no_proxy",
 ];
 const LOCK_TIMEOUT: &str = "-lock-timeout=120s";
-const CLOSED_AWS: [(&str, &str); 3] = [
+const CLOSED: [(&str, &str); 4] = [
     ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
     ("AWS_CONFIG_FILE", "/dev/null"),
     ("AWS_EC2_METADATA_DISABLED", "true"),
+    ("SCW_CONFIG_PATH", "/nonexistent/swarmy/scw-config.yaml"),
 ];
+#[derive(Clone)]
+struct Var {
+    name: String,
+    value: String,
+    secret: bool,
+}
 #[derive(Clone, Default)]
 pub struct CredentialEnv {
-    vars: Vec<(String, String)>,
+    vars: Vec<Var>,
 }
 impl CredentialEnv {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
-    /// Keep the AWS provider off shared files and instance metadata.
+    /// Keep the AWS and Scaleway providers off shared files, local CLI profiles and instance metadata.
     #[must_use]
     pub fn closed() -> Self {
-        CLOSED_AWS
-            .iter()
-            .fold(Self::new(), |env, (name, value)| env.with(*name, *value))
+        CLOSED.iter().fold(Self::new(), |env, (name, value)| {
+            env.with_setting(*name, *value)
+        })
     }
+    /// Add a secret: passed to `OpenTofu`, refused in its files, redacted from its output.
     #[must_use]
-    pub fn with(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.vars.push((name.into(), value.into()));
+    pub fn with(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.push(name.into(), value.into(), true)
+    }
+    /// Add a plain setting, such as a region: passed to `OpenTofu` and allowed anywhere.
+    #[must_use]
+    pub fn with_setting(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.push(name.into(), value.into(), false)
+    }
+    fn push(mut self, name: String, value: String, secret: bool) -> Self {
+        self.vars.push(Var {
+            name,
+            value,
+            secret,
+        });
         self
     }
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.vars.iter().map(|(name, _)| name.as_str())
+        self.vars.iter().map(|var| var.name.as_str())
+    }
+    fn secrets(&self) -> impl Iterator<Item = &Var> {
+        self.vars
+            .iter()
+            .filter(|var| var.secret && !var.value.is_empty())
     }
     fn found_in(&self, bytes: &[u8]) -> Option<&str> {
-        self.vars
-            .iter()
-            .find(|(name, value)| {
-                secret_name(name)
-                    && !value.is_empty()
-                    && bytes
-                        .windows(value.len())
-                        .any(|window| window == value.as_bytes())
+        self.secrets()
+            .find(|var| {
+                bytes
+                    .windows(var.value.len())
+                    .any(|w| w == var.value.as_bytes())
             })
-            .map(|(name, _)| name.as_str())
+            .map(|var| var.name.as_str())
     }
     fn redact(&self, text: &str) -> String {
-        self.vars
-            .iter()
-            .filter(|(name, value)| secret_name(name) && !value.is_empty())
-            .fold(text.to_owned(), |text, (_, value)| {
-                text.replace(value, "<redacted>")
-            })
+        self.secrets().fold(text.to_owned(), |text, var| {
+            text.replace(&var.value, "<redacted>")
+        })
     }
-}
-fn secret_name(name: &str) -> bool {
-    !CLOSED_AWS.iter().any(|(closed, _)| *closed == name)
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -97,6 +114,29 @@ pub struct Tofu {
     plugin_cache: PathBuf,
 }
 impl Tofu {
+    /// The test override when set and non-empty, otherwise the pinned verified download.
+    /// # Errors
+    /// Returns `TofuBinMissing` for a missing override, or download errors.
+    pub async fn resolve(cache: &Path) -> Result<Self> {
+        Self::resolve_with(std::env::var_os("SWARMY_TOFU_BIN").as_deref(), cache).await
+    }
+    /// Resolve with an explicit override so tests do not mutate process environment.
+    /// # Errors
+    /// Returns `TofuBinMissing` for a missing override, or download errors.
+    pub async fn resolve_with(
+        override_bin: Option<&std::ffi::OsStr>,
+        cache: &Path,
+    ) -> Result<Self> {
+        if let Some(path) = override_bin.filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(path);
+            if !path.is_file() {
+                return Err(Error::TofuBinMissing(path));
+            }
+            return Ok(Self::from_binary(path, cache));
+        }
+        Self::install(cache, &opentofu::Source::pinned()).await
+    }
+
     /// # Errors
     /// Returns installation or platform errors.
     pub async fn install(cache: &Path, source: &opentofu::Source) -> Result<Self> {
@@ -141,6 +181,51 @@ fn io(action: &'static str, path: &Path, source: std::io::Error) -> Error {
         path: path.into(),
         source,
     }
+}
+#[derive(serde::Deserialize)]
+struct StateFile {
+    #[serde(default)]
+    resources: Vec<StateResource>,
+}
+#[derive(serde::Deserialize)]
+struct StateResource {
+    mode: String,
+    #[serde(rename = "type")]
+    kind: String,
+    name: String,
+    #[serde(default)]
+    module: Option<String>,
+    #[serde(default)]
+    instances: Vec<StateInstance>,
+}
+#[derive(serde::Deserialize)]
+struct StateInstance {
+    #[serde(default)]
+    index_key: Option<serde_json::Value>,
+}
+/// Managed resource instances in an `OpenTofu` state file, as addresses such as
+/// `scaleway_instance_ip.this[0]`. Data sources are left out because destroying
+/// the group does not remove them and they cost nothing.
+fn managed_instances(json: &[u8]) -> serde_json::Result<Vec<String>> {
+    let state: StateFile = serde_json::from_slice(json)?;
+    Ok(state
+        .resources
+        .iter()
+        .filter(|resource| resource.mode == "managed")
+        .flat_map(|resource| {
+            let base = match &resource.module {
+                Some(module) => format!("{module}.{}.{}", resource.kind, resource.name),
+                None => format!("{}.{}", resource.kind, resource.name),
+            };
+            resource
+                .instances
+                .iter()
+                .map(move |instance| match &instance.index_key {
+                    Some(key) => format!("{base}[{key}]"),
+                    None => base.clone(),
+                })
+        })
+        .collect())
 }
 impl Workspace<'_> {
     #[must_use]
@@ -293,6 +378,19 @@ impl Workspace<'_> {
         let (bytes, _) = self.run(Subcommand::Output).await?;
         Ok(parse_outputs(&String::from_utf8_lossy(&bytes))?)
     }
+    /// Managed resource instances recorded in this workspace's local state.
+    /// Empty when there is no state file yet.
+    /// # Errors
+    /// Returns filesystem failures and a state file that is not `OpenTofu` JSON.
+    pub async fn state_resources(&self) -> Result<Vec<String>> {
+        let path = self.dir.join(STATE_FILE);
+        let bytes = match fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io("reading", &path, error)),
+        };
+        managed_instances(&bytes).map_err(|source| Error::State { path, source })
+    }
     async fn run(&self, sub: Subcommand<'_>) -> Result<(Vec<u8>, Option<i32>)> {
         fs::create_dir_all(&self.tofu.plugin_cache)
             .await
@@ -309,8 +407,8 @@ impl Workspace<'_> {
                 command.env(key, value);
             }
         }
-        for (key, value) in &self.credentials.vars {
-            command.env(key, value);
+        for var in &self.credentials.vars {
+            command.env(&var.name, &var.value);
         }
         command
             .env("TF_IN_AUTOMATION", "1")
@@ -417,6 +515,31 @@ pub(crate) fn stderr_summary(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn state_lists_managed_instances_only() {
+        let state = br#"{"version":4,"resources":[
+            {"mode":"data","type":"aws_ssm_parameter","name":"ubuntu","instances":[{}]},
+            {"mode":"managed","type":"scaleway_instance_security_group","name":"this","instances":[{"schema_version":0,"attributes":{}}]},
+            {"mode":"managed","type":"scaleway_instance_ip","name":"this","instances":[{"index_key":0},{"index_key":1}]},
+            {"mode":"managed","module":"module.net","type":"x","name":"y","instances":[{"index_key":"a"}]}
+        ]}"#;
+        assert_eq!(
+            managed_instances(state).unwrap(),
+            [
+                "scaleway_instance_security_group.this",
+                "scaleway_instance_ip.this[0]",
+                "scaleway_instance_ip.this[1]",
+                "module.net.x.y[\"a\"]",
+            ]
+        );
+        assert!(
+            managed_instances(br#"{"version":4,"resources":[]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(managed_instances(b"state").is_err());
+    }
+
     use super::*;
     #[test]
     fn summaries() {
@@ -436,8 +559,13 @@ mod tests {
     fn redaction() {
         let env = CredentialEnv::new()
             .with("EMPTY", "")
-            .with("TOKEN", "secret");
+            .with("TOKEN", "secret")
+            .with_setting("AWS_REGION", "us-west-2");
         assert_eq!(env.redact("secret secret"), "<redacted> <redacted>");
+        assert_eq!(env.redact("us-west-2 secret"), "us-west-2 <redacted>");
+        assert_eq!(env.found_in(b"location us-west-2"), None);
+        assert_eq!(env.found_in(b"x secret y"), Some("TOKEN"));
+        assert_eq!(CredentialEnv::closed().found_in(b"/dev/null true"), None);
         assert!(!format!("{env:?}").contains("secret"));
     }
 }

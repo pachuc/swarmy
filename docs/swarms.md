@@ -48,6 +48,7 @@ pinned, checksum-verified release on first use.
 | `existing` | hosts you list | never deleted, only cleaned |
 | `hetzner-cloud` | created by OpenTofu | destroyed on `down` |
 | `aws` | created by OpenTofu | destroyed on `down` |
+| `scaleway` | created by OpenTofu | destroyed on `down` |
 | a path | your OpenTofu module | destroyed on `down` |
 
 ```toml
@@ -102,6 +103,8 @@ programs keep configuration, data, state and cache. Each location below is a
 | data/swarms/NAME/keys/ | Private swarm SSH keys |
 | data/swarms/NAME/keys/groups/ | Private SSH keys for machine groups |
 | data/swarms/NAME/tofu/GROUP/ | OpenTofu state and working directory per group |
+| data/provisioner/tofu/GROUP/ | Elastic group OpenTofu state and working directory (on the primary) |
+| data/provisioner/keys/groups/ | Elastic group SSH keys (on the primary) |
 | data/swarms/NAME/tunnel/ | On-demand SSH tunnel state |
 | data/swarms/NAME/services.toml | Local service settings, regenerated on up/start |
 | data/swarms/NAME/stack/ | Default local backing stack data |
@@ -174,8 +177,7 @@ swarmy --swarm demo doctor
 swarmy swarm status demo
 ```
 
-The SSH key is copied to the private record directory. SSH and rsync must
-reach the host with a login able to prepare local storage. Systemd starts
+The SSH key is copied to the private record directory. SSH and rsync must reach the host with a login that is root or has passwordless sudo (`sudo -n true` must succeed). For any login other than root, swarmy runs every host command through `sudo -n` and the receiving rsync as `sudo -n rsync`, so files land as they would with a root login. Provisioning refuses a login without passwordless sudo before it copies anything. Systemd starts
 and supervises services on Linux hosts; provisioning installs its units. `--ssh-user`
 sets that login; `--service-user` sets the account that owns the node checkout
 and runs services (default `swarmy`). Set `--private-address` when hosts talk
@@ -186,7 +188,7 @@ group may be extended with:
 swarmy swarm node add demo box --host 203.0.113.11 --ssh-key <bootstrap-key>
 ```
 
-The primary is provisioned first; upgrade and teardown visit nodes first.
+The primary is provisioned and upgraded first; teardown visits nodes first.
 Remove existing node hosts with `swarmy swarm scale`.
 
 After provisioning, client commands such as `swarmy --swarm demo doctor` and
@@ -201,6 +203,20 @@ host. `private_address` defaults to `address`. SSH key paths must be absolute.
 already marked provisioned in the record. Node add writes the new host to the
 spec, discarding comments, then provisions it. Down keeps the spec so the
 swarm can be provisioned again.
+
+Up builds an image recipe carried by the client on the primary, registers it
+as `DIRECTORY-NAME:SWARM` and makes it the swarm's default image:
+`images/base-ubuntu` by default, so `base-ubuntu:demo`. The primary's node boots the new image once to record its boot set, so the first cold start on any node prefetches. `--image-recipe
+images/swarmy-dev` builds `swarmy-dev:demo` instead, and `--no-image` skips
+the build. To use a recipe the client does not carry, build it as root on a
+Linux machine and register it with the swarm through its API:
+
+```sh
+sudo -E env HOME="$HOME" swarmy --swarm demo image build ./my-recipe --tag v1
+```
+
+The image is registered as `my-recipe:v1`; sessions select it with
+`--image my-recipe:v1`.
 
 S3 is an object-storage API for buckets and keys. The backing object store
 can use a compatible service. Add public bucket coordinates to the spec,
@@ -242,13 +258,21 @@ running swarm. The file is `~/.local/share/swarmy/cloud-credentials.toml` by
 default; `XDG_DATA_HOME` moves it. It is written mode 0600 and refused if
 readable by other users.
 
+Elastic groups instead read their cloud keys from the swarm's encrypted credential store, set separately from this laptop file with `swarmy --swarm hz auth set hetzner-cloud --from-env`.
+
 ```sh
 swarmy cloud login hetzner-cloud            # paste the token at the hidden prompt
 swarmy cloud login hetzner-s3               # access key, then secret key (made in the Hetzner console)
 swarmy cloud login aws --region eu-central-1
+swarmy cloud login scaleway  # access key, secret key, then project id
 swarmy cloud ls
 swarmy cloud logout aws
 ```
+
+The AWS region is a plain setting, not a secret. Swarmy passes it to OpenTofu
+as `AWS_REGION` with the keys but never treats it as a credential, so it may
+equal a group's location. The built-in AWS module ignores it and uses each
+group's `location`; it matters only to a custom module that reads it.
 
 Pipe one value per line for unattended use, for example:
 
@@ -256,6 +280,7 @@ Pipe one value per line for unattended use, for example:
 printf '%s\n' "$HCLOUD_TOKEN" | swarmy cloud login hetzner-cloud
 ```
 
+The Scaleway project id is not a secret, but is read the same way so it stays out of shell history.
 Secrets are never accepted as arguments: arguments can appear in shell
 history and process lists. Ctrl-C during a hidden prompt may leave terminal
 echo off; run `stty echo` or `reset` to restore it.
@@ -265,6 +290,7 @@ echo off; run `stty echo` or `reset` to restore it.
 | hetzner-cloud | `HCLOUD_TOKEN` |
 | hetzner-s3 | `MINIO_USER`, `MINIO_PASSWORD` |
 | aws | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_REGION` |
+| scaleway | `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` |
 
 Values reach OpenTofu only through the environment of each run. The Hetzner S3
 endpoint comes from the bucket location in the swarm specification, not from
@@ -273,10 +299,10 @@ credentials.
 ## Swarms on cloud machines
 
 An OpenTofu group describes machines created and tracked by OpenTofu, an
-infrastructure-as-code tool. A group's `module` is `"hetzner-cloud"`, `"aws"`,
+infrastructure-as-code tool. A group's `module` is `"hetzner-cloud"`, `"aws"`, `"scaleway"`,
 or an absolute path to your own module. Hetzner Cloud needs credentials from
 `swarmy cloud login hetzner-cloud`, and its stack bucket also needs
-`swarmy cloud login hetzner-s3`; AWS needs `swarmy cloud login aws`.
+`swarmy cloud login hetzner-s3`; AWS needs `swarmy cloud login aws`. Scaleway needs `swarmy cloud login scaleway`.
 Credentials reach OpenTofu only through its environment. They are not put in
 tfvars, the files
 that supply module input values.
@@ -292,14 +318,85 @@ directory. It generates one SSH key per group and shares a network between
 groups of the same module. It creates a bucket only when the stack group uses
 hetzner-cloud and the spec has no `[bucket]` section.
 
-Groups of the same module share one network, so they must be in the same
-Hetzner network zone (fsn1, nbg1 and hel1 count as one zone) or the same AWS
-region; otherwise up refuses. Swarmy waits for SSH and cloud-init, the
+Hetzner and AWS groups of the same module share a network, so they must be
+in the same Hetzner network zone (fsn1, nbg1 and hel1 count as one zone) or
+the same AWS region; otherwise up refuses. This includes elastic groups: an
+elastic group joins the network of the first group of its module that `swarm up`
+applied, so it must be in the same Hetzner network zone or AWS region too.
+`swarm up` records each group's network in the swarm record; run `swarm up`
+and then `swarm scale` again after upgrading so the provisioner learns it.
+Scaleway groups create no private network. Swarmy waits for SSH and cloud-init, the
 machine's first-boot configuration service, before provisioning hosts. Cloud
 and existing-host groups can coexist in a mixed swarm. Down destroys OpenTofu
 groups in reverse order and removes the bucket with the data.
 `SWARMY_TOFU_BIN` is a development and test override for the pinned,
 checksum-verified OpenTofu download.
+
+A group that creates machines may set `image` to choose the machine image;
+without it the module default is used (Ubuntu 24.04). Hetzner takes an image
+name or id, Scaleway an image label or UUID, AWS an AMI id or a public SSM
+parameter path under `/aws/service/`, for example the Deep Learning Base OSS
+NVIDIA Driver image
+`/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id`.
+Swarmy provisioning expects Ubuntu. The image cannot change once the group has
+machines.
+
+### Minimum node size
+
+A node keeps 3072 MiB of memory for the operating system and swarmy's own
+services, and offers the rest to sandboxes. The default sandbox needs 768 MiB,
+so a node with sandboxes needs at least 3840 MiB of memory as the kernel
+reports it (`MemTotal` in `/proc/meminfo`). The kernel reports less than a
+machine's nominal size: a 4 GiB machine such as an AWS t3.medium reports about
+3830 MiB and falls short. Choose 8 GiB or more. Each further default sandbox
+needs another 768 MiB.
+
+Provisioning checks this on every host with sandboxes before it changes
+anything, and stops with the numbers when the host is too small. This applies
+to `swarm up`, `node add`, `swarm scale`, and elastic joins. An elastic group
+with a size below the minimum fails every join (the message is in the
+provisioner's journal on the primary, `journalctl -u swarmy-provisioner`), and
+the provisioner replaces the machine after its 15-minute join deadline, within
+the creation limit, so fix the group's size and scale again.
+
+### Distance from the primary
+
+A node registers, renews leases and opens hosting through the primary node API over its SSH tunnel. NATS and the node API use their own SSH connection to the primary. When the primary serves the object store, chunk traffic uses a second SSH connection so disk transfers cannot queue node API answers behind them. Before this split, uploads during volume publication pushed claims to three or four round trips on a far node because both shared one connection. Joined nodes hold a revocable node token, not database access. The node reads disk chunks directly from object storage. Nodes are supported up to 400 ms round trip from the primary. `scripts/node-suites/latency.sh` runs on the suite node at 175 and 400 ms round trip. At 175 ms it gates warm tool overhead below 1,000 ms and cold start below 60 s; at 400 ms it gates warm overhead below 2,000 ms and reports cold start without a gate. Every node API request except first registration must complete within one round trip plus 150 ms at either distance (and at any other configured round trip). It prints a per-call timing table and cold-start times, ending with one `TOOL_TIMINGS` JSON line.
+
+### Scaleway node groups
+
+Scaleway is a French cloud provider. An existing stack host can run with a
+Scaleway GPU node group:
+
+```toml
+name = "fleet"
+lifecycle = "persistent"
+[groups.box]
+module = "existing"
+hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/keys/box" }]
+[groups.gpu]
+module = "scaleway"
+size = "L4-1-24G"
+location = "fr-par-2"
+count = 0
+sandboxes = 1
+[placement]
+stack = "box"
+services = "box"
+nodes = ["box", "gpu"]
+```
+
+Machines get a routed public IPv4, no private network, root login via
+cloud-init, and a 200 GB block-storage root disk. Nodes reach the primary
+through the node tunnel over the internet. The group creates no bucket, so
+the swarm needs a `[bucket]` or a stack that provides object storage. The
+group's security group stays when the group is scaled to zero and is removed
+when the group leaves the spec or the swarm is taken down. Use an API key for
+a dedicated project, with the InstancesFullAccess and BlockStorageFullAccess
+permission sets on that project only. The root disk is a Block Storage (SBS)
+volume, and OpenTofu reads and deletes it through the Block Storage API.
+Swarmy uses Scaleway only for node groups; a Scaleway stack or services group
+has not been tried.
 
 ## Planning changes
 
@@ -329,6 +426,17 @@ For leftover service users, fstab entries, sandbox files and tunnel keys, see
 `swarmy swarm logs fleet` follows service logs. Select `scheduler`, `worker`,
 `gateway`, `api` or `supervisor` to follow one service.
 
+Every store transaction is timed. One that takes a second or more logs a warning,
+`slow store transaction`, with `caller` (the source file, line and column that ran
+it), `attempts` (how many times FoundationDB ran it, counting conflict retries),
+`elapsed_ms` and `ok`. Set `RUST_LOG=info,swarmy_store::transaction=debug` on a
+service to log every transaction the same way. A node logs one `node request`
+line per node API request with its path, attempts, elapsed time and outcome.
+The chaos latency check uses `--max-node-request-ms` to bound those requests;
+the request bound is one round trip plus 150 ms. Registration and volume
+protect, a bulk list of chunk hashes sent during publication, are reported but
+not bounded.
+
 Host swarms default to the primary host's `swarmyd` journal. Pass
 `--host NAME` to select another recorded host, or `--unit swarmyd` to select
 a unit.
@@ -342,27 +450,49 @@ swarmy swarm upgrade demo --services-only
 swarmy swarm upgrade demo --drain-timeout 600
 ```
 
-Upgrade reconciles binaries and units in place. It drains sandboxes before
-restarting nodes and upgrades the primary last. Development checkouts with
+Upgrade checks each host with the new build of `swarmy-node --check-config` and its
+`node.env` before installing or restarting anything on that host. If the new
+build rejects the configuration, the error names removed keys and replacements,
+and the client error ends with the host's last stderr lines.
+Upgrade reconciles binaries and units in place. It upgrades the primary first
+because other nodes need its node API and credentials, then drains sandboxes
+before restarting other nodes. A full upgrade issues a node token on hosts
+without one, keeps the node API lines in `node.env` current, restarts a node
+host's tunnel with its node, and removes FoundationDB leftovers on node-only
+hosts. After a store wipe, delete `/etc/swarmy/node-token` on every host before
+upgrading so fresh credentials are issued. Development checkouts with
 uncommitted changes are refused unless `--allow-dirty` is set. Machines
 provisioned before the `swarmy-core` binary should be upgraded with the same
 command; the installed units are reconciled.
 
+## When no node has room
+
+A full swarm, or a GPU requirement no node meets, parks sessions instead of
+failing their calls. The scheduler retries every 30 seconds and sessions
+continue on their own when capacity appears. After the configured maximum
+session wait (one hour by default), pending calls fail without running.
+
+In a swarm with an autoscaled elastic group, a session waiting for a GPU makes the provisioner add a machine, and parked sessions continue when it joins, usually 5 to 15 minutes later (see [Elastic groups](#elastic-groups)). The provisioner wakes parked sessions when a machine joins. A computer needing more memory than any live node or autoscaled group offers still waits, with a reason naming its need and the largest suitable machine's offer.
+
 ## Scaling node groups
 
 ```sh
+swarmy swarm scale fleet workers 0
 swarmy swarm scale fleet workers 4
 swarmy swarm scale fleet workers 2 --drain-timeout 1200
 ```
 
-Count must be between 1 and 50, so a group cannot be scaled to zero. Growing
-updates the spec and reruns the normal provisioning path; already provisioned
+Count is 0 to 50. Zero is allowed only for a node group whose machines
+OpenTofu creates; it removes all machines while keeping the group in the spec
+with `count = 0`. An elastic group takes 0 to its `max` (see
+[Elastic groups](#elastic-groups)). Existing-host groups keep at least one
+host; stack and services groups need at least one machine. Growing updates the spec and reruns the normal provisioning path; already provisioned
 machines are skipped. Shrinking removes the highest-numbered nodes first. It
 waits up to `--drain-timeout` seconds per node (600 by default) for running
 sandbox commands and turns to finish. The node agent then stops cleanly,
 checkpointing and releasing its computers, which start on another node at
 their next turn. `--force` stops nodes that remain busy or removes unreachable
-nodes; their computers recover when leases expire. The node tunnel key is
+nodes; their computers recover when leases expire. The node tunnel key and node API credential are
 revoked on the stack host. OpenTofu node machines are destroyed, while
 existing hosts have swarmy removed but the machines themselves are kept. Add
 an existing host with `swarmy swarm node add` rather than growing its count.
@@ -371,6 +501,125 @@ the spec without preserving comments. After a failure, rerun the same scale
 command to finish; hand-lowering `count` and running `up` remains refused.
 
 See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
+
+## Elastic groups
+
+An elastic group declares cloud machines in the swarm spec, but the swarm's
+provisioner on the primary owns the machines and runs OpenTofu there, within about fifteen seconds of a scale.
+The laptop never applies that group's OpenTofu module. `--force` does not apply;
+the provisioner on the primary drains and destroys elastic machines. In a
+swarm with an existing stack group, add `gpu` to `placement.nodes` and declare:
+
+```toml
+[groups.gpu]
+module = "scaleway"
+size = "L4-1-24G"
+location = "fr-par-2"
+elastic = true
+autoscale = true
+node_memory_mib = 12288
+sandboxes = 1
+max = 1
+price_per_hour = "0.75"
+currency = "EUR"
+
+[placement]
+stack = "box"
+services = "box"
+nodes = ["gpu"]
+```
+
+Autoscale buys machines only for GPU waits, so turn it on only for a group whose size has a GPU.
+`node_memory_mib` is what one machine offers to computers after the 3072 MiB
+system reserve. Read `capacity.memory_bytes` from `swarmy doctor --json` on a
+joined machine and divide by 1048576. `swarmy swarm scale` records the value;
+registering an autoscaled group needs it once. Removing the key from the spec
+does not clear the recorded value. Autoscale buys only for waiting computers
+whose memory fits; larger computers wait with a reason naming the shortfall.
+
+After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
+Scale accepts 0 through max; down sets desired to 0 and refuses until the
+provisioner has reconciled that change and all machines are gone. It then prints one line for each elastic group it tore down (`elastic_groups` in `--json` output). The hourly
+price comes from the spec because the module contract has no price output.
+The provisioner joins each machine over SSH from the primary using the primary's own swarmy-node build. A joined node receives only `swarmy-node`, not the FoundationDB client or stack backing tools. A machine that has not joined within 15 minutes of creation is failed, destroyed and replaced within the creation limit. Shrinking drains each removed node for up to 10 minutes, then stops it anyway, revokes its tunnel key and node API credential and destroys it.
+Elastic machines follow the same storage rule as other nodes. When the swarm
+has a bucket, from `[bucket]` or created by OpenTofu for a hetzner-cloud stack
+group, they use it directly. Otherwise the stack host runs its own object store
+and they reach it through their tunnel. `swarmy swarm scale` records which of
+the two applies when it registers the group, so run it again after adding or
+removing a bucket.
+
+The creation interlock reserves at most four machine creations per hour per swarm,
+including failed applies; further growth waits for the one-hour window.
+
+Every 15 seconds the provisioner counts sessions waiting for a GPU. Each dedicated session needs a machine of its own. Shared sessions fill room on busy machines, then use `sandboxes` computers per machine; set `sandboxes` to the number of GPU computers one machine should hold, 1 for an L4-1-24G running fleet workers. The provisioner raises desired up to `max`, within the limit of four creations per hour. The machine's cause names the first waiting agent and session, and its reason starts with that agent's `request_gpu` reason, so a `tasky <id>` prefix carries through to `fleet status`.
+
+Desired falls only when no session waits for a GPU, and only from the top. The highest-numbered machine goes once it has had no GPU computer for 30 minutes, counted from its join or from when its last GPU computer left, or when it was never created. An idle machine below a busy one stays. CPU computers on a GPU machine do not keep it alive; they are drained and move. Only one group per swarm may autoscale, and the default is off.
+
+`swarmy swarm scale` on an autoscaled group sets desired once; after the provisioner has applied it, autoscale adjusts it from there. To scale by hand, set `autoscale = false` and run scale again. `swarmy swarm down` turns autoscale off first. The node's own 30-minute idle eviction (`[sandbox] idle_secs`) means a quiet GPU worker's machine goes about 60 minutes after its last command. A released fleet task's machine goes about 30 minutes after release.
+## GPU nodes
+
+A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to
+list installed cards. It advertises their model, memory in MiB, and count in its
+node record. A missing command, a query that fails or runs longer than 10 seconds,
+or malformed output means the node advertises no cards. `swarmy doctor` lists
+cards on live nodes.
+
+Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
+prefers nodes without cards. Shared needs at least one card and can share the
+node with other shared GPU sandboxes, provided no dedicated GPU sandbox is there.
+Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
+still share it. Dedicated reserves the node's whole set of cards, not individual
+cards. A GPU requirement overrides local scratch preference, so moving from a
+scratch host may require a cold cargo target. If no node qualifies, the step
+parks the session in a durable capacity wait, as described in
+[When no node has room](#when-no-node-has-room). An agent allowed with
+`--allow-gpu-request true` can change the requirement itself with the
+`request_gpu` and `release_gpu` tools
+([agents that ask for a GPU](agent-lifecycle.md#agents-that-ask-for-a-gpu)).
+
+For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
+`count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards
+without probing. Local services do not inherit shell variables, so use the TOML
+form for local swarms. The override only advertises cards; it exposes no device.
+
+Provisioning prepares a machine that has an NVIDIA card. When `nvidia-smi` is missing (plain Ubuntu), it installs the `nvidia-driver-580-server` package; images with a preinstalled driver, such as Scaleway's GPU OS (on AWS, the Deep Learning Base OSS NVIDIA Driver image through `image`), skip that step. It then waits up to 30 seconds for `nvidia-smi` to answer; if the new driver still does not load, provisioning prints `nvidia-smi`'s error and asks for a reboot and a rerun. On AWS g6 machines with plain Ubuntu 24.04 no reboot was needed (driver 580 server, about 3 minutes to install). It installs NVIDIA's container toolkit from NVIDIA's package repository when `nvidia-ctk` is missing, and then writes a CDI spec with `nvidia-ctk cdi generate --output=/etc/cdi/nvidia.json --format=json`. CDI, the Container Device Interface, is a JSON file that lists the device nodes, driver library mounts, environment variables and hooks a container needs to use the card.
+
+The node reads that spec once at start, from `[node] cdi_spec` (`SWARMY_NODE_CDI_SPEC`, default `/etc/cdi/nvidia.json`, JSON only). A node that finds cards but cannot use the spec logs an error and advertises no cards, so no GPU sandbox is placed there; rerun provisioning to fix it. A sandbox with a `shared` or `dedicated` requirement gets the spec's own edits plus those of its `all` device: every card on the node, the driver libraries, NVIDIA's setup hooks, and `NVIDIA_DRIVER_CAPABILITIES=graphics,display,compute,utility`. It gets no extra Linux capability. Sandboxes without a GPU requirement are unchanged. Fake cards expose no device. A driver upgrade renames library files, so rerun provisioning after one.
+
+## Machines
+
+Swarmy records every machine created for an elastic group: its group, OpenTofu machine name, size,
+location, state, lifecycle timestamps, hourly price and currency, and cause.
+The cause includes an agent, a session and a free-text reason; the fleet driver
+puts its tasky id in the reason.
+
+- Requested: creation has been requested but no cloud machine exists yet.
+- Creating: the cloud create operation is in progress.
+- Provisioning: the cloud machine exists and is waiting to be, or being, configured.
+- Joined: the node has joined the swarm and may host agents.
+- Draining: new assignments have stopped while existing work finishes.
+- Destroyed: the machine has been removed; this state is final.
+- Failed: an operation failed; a machine already created keeps costing until destroyed.
+- Orphaned: swarmy lost track of a cloud machine that may still exist and cost money; check the provider and remove it by hand.
+
+The provisioner writes Requested and Creating before the OpenTofu apply, Created (which enters Provisioning) after it sees the machine in state, Provisioned after SSH configuration, Joined after node registration, Failed after the join timeout, and DrainRequested before removal and Destroyed after it disappears from state.
+
+When desired reaches 0, the provisioner runs `tofu destroy` instead of an apply, so the group also loses resources that do not depend on the machine count, such as its security group. An apply can fail after creating some resources, for example a public IP before the provider refuses the machine for quota. The provisioner then logs the resources left in state, counts the group as having no machines, and destroys those resources at the next scale to 0 or `swarmy swarm down`.
+
+The first billing unit starts on creation and is billed immediately. By default
+billing is per started hour; a record can instead specify per started minute.
+Cost is computed when the record is read, not periodically written. Assignment
+intervals track each agent's use of the machine, and current agents come from
+open intervals.
+A GPU placement on a joined machine opens an interval; release or a move closes it.
+CPU sandboxes on a GPU machine are not counted.
+
+```sh
+swarmy swarm machines
+swarmy swarm machines --all
+swarmy --swarm hz swarm machines --json
+```
 
 ## Model provider credentials
 
@@ -418,3 +667,7 @@ scripts/acceptance-hetzner-cloud.sh --provider PROVIDER --model MODEL --api-key-
 [cloud-substrate.md](cloud-substrate.md) describes cloud boundaries;
 [fleet-runbook.md](fleet-runbook.md) covers the fleet; [DEV.md](DEV.md) covers
 checkout development.
+
+The latency suite primes a boot set before the measured sessions; its cold-start rows include `prefetch_bytes` and `prefetch_ms`. The latency suite runs chaos with `--node-api-host` set to the primary network
+namespace address, so its isolated node can reach the node API. Chaos starts
+and may kill the node API alongside the other services.

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+bash -n "$repo/scripts/node-suites/gpu-proof.sh"
+source "$repo/scripts/node-suites/gpu-proof.sh"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+base=(--swarm hz --provider p --model m --image swarmy-dev:hz)
+gpu_parse_args "${base[@]}"
+[[ $gpu == shared && $memory == 4096 ]]
+gpu_parse_args "${base[@]}" --gpu dedicated --memory 12288 --effort low --keep-agent --dry-run
+[[ $gpu == dedicated && $memory == 12288 && $effort == low && $keep_agent == 1 && $dry_run == 1 ]]
+reject() {
+    local status=0
+    gpu_parse_args "$@" 2> "$tmp/error" || status=$?
+    [[ $status == 2 ]] && grep -q '^usage: gpu-proof.sh ' "$tmp/error"
+}
+reject
+reject --provider p --model m --image swarmy-dev:hz
+reject --swarm hz --model m --image swarmy-dev:hz
+reject --swarm hz --provider p --image swarmy-dev:hz
+reject --swarm hz --provider p --model m
+reject --swarm hz --provider p --model m --image swarmy-dev
+reject "${base[@]}" --gpu none
+reject "${base[@]}" --memory 0
+reject "${base[@]}" --memory 12x
+reject "${base[@]}" --bogus
+reject "${base[@]}" --swarm
+mkdir -p "$tmp/bin"
+printf '#!/bin/sh\nexit 99\n' > "$tmp/bin/swarmy"
+chmod +x "$tmp/bin/swarmy"
+PATH="$tmp/bin:$PATH" gpu_main "${base[@]}" --dry-run > "$tmp/plan"
+grep -q 'glxinfo -B' "$tmp/plan"
+grep -q 'nvidia-smi' "$tmp/plan"
+grep -q 'screen_screenshot' "$tmp/plan"
+printf 'nvidia\nOpenGL renderer string: NVIDIA L4/PCIe/SSE2\nNVIDIA L4, 310\nGEARS\n352\n/usr/lib/xorg/Xorg\n' > "$tmp/probe"
+gpu_py probe "$tmp/probe" > "$tmp/result"
+grep -q '"processes_listed": true' "$tmp/result"
+sed 's@NVIDIA L4/PCIe/SSE2@llvmpipe (LLVM 17.0.6, 256 bits)@' "$tmp/probe" > "$tmp/invalid"
+if gpu_py probe "$tmp/invalid" >/dev/null 2>&1; then exit 1; fi
+sed '1s/nvidia/software/' "$tmp/probe" > "$tmp/invalid"
+if gpu_py probe "$tmp/invalid" >/dev/null 2>&1; then exit 1; fi
+sed '5s/352/0/' "$tmp/probe" > "$tmp/invalid"
+if gpu_py probe "$tmp/invalid" >/dev/null 2>&1; then exit 1; fi
+cat > "$tmp/windows.jsonl" <<'JSON'
+{"session_id":"s"}
+{"tool_call_requested":{"seq":2,"call":{"call_id":"windows","tool":"screen_windows","arguments":{}}}}
+{"tool_call_completed":{"seq":3,"call_id":"windows","result":{"completed":{"output":"[{\"title\":\"glxgears\"}]"}}}}
+{"tool_call_requested":{"seq":4,"call":{"call_id":"shot","tool":"screen_screenshot","arguments":{}}}}
+{"tool_call_completed":{"seq":5,"call_id":"shot","result":{"completed":{"metadata":{"image_object_key":"test","image_media_type":"image/png"}}}}}
+JSON
+gpu_py windows "$tmp/windows.jsonl" 1
+sed 's/glxgears/other-window/' "$tmp/windows.jsonl" > "$tmp/invalid-windows.jsonl"
+if gpu_py windows "$tmp/invalid-windows.jsonl" 1 >/dev/null 2>&1; then exit 1; fi
+printf 'gpu-proof: ok\n'

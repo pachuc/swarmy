@@ -18,6 +18,13 @@ pub struct UsageTotals {
     pub cost_micros: u64,
 }
 
+/// Micro-units rounded half up to four decimal places without losing integer precision.
+#[must_use]
+pub fn format_micros(micros: u64) -> String {
+    let units = micros / 100 + u64::from(micros % 100 >= 50);
+    format!("{}.{:04}", units / 10_000, units % 10_000)
+}
+
 impl UsageTotals {
     pub fn add(&mut self, usage: &TokenUsage, cost_micros: u64) {
         self.cost_micros = self.cost_micros.saturating_add(cost_micros);
@@ -41,8 +48,7 @@ impl UsageTotals {
     /// Dollars rounded to four decimal places without losing integer precision.
     #[must_use]
     pub fn dollars(&self) -> String {
-        let units = self.cost_micros / 100 + u64::from(self.cost_micros % 100 >= 50);
-        format!("{}.{:04}", units / 10_000, units % 10_000)
+        format_micros(self.cost_micros)
     }
 }
 
@@ -51,6 +57,17 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
 
+    #[test]
+    fn format_micros_rounds_half_up() {
+        for (micros, expected) in [
+            (0, "0.0000"),
+            (49, "0.0000"),
+            (50, "0.0001"),
+            (1_500_000, "1.5000"),
+        ] {
+            assert_eq!(format_micros(micros), expected);
+        }
+    }
     #[test]
     fn token_usage_has_fixed_bytes() {
         let usage = TokenUsage {

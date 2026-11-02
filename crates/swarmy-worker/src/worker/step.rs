@@ -1,4 +1,5 @@
 use super::inference::warn_on_route_fallback;
+use super::tools::{Dispatch, DispatchOutcome};
 use super::{
     Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, KillPoint, LiveFeed,
     MAX_SCAN_LIMIT, MessageId, RequestId, Result, SNAPSHOT_CACHE_SIZE, SandboxArguments, SessionId,
@@ -15,6 +16,8 @@ pub(super) struct StepContext {
     pub snapshot: Option<Snapshot>,
     pub events: Vec<Event>,
     pub turn: Option<MessageId>,
+    /// Worker clock at the claim, consumed by the first action only.
+    pub woken_ns: Option<i64>,
 }
 
 impl Worker {
@@ -192,6 +195,23 @@ impl Worker {
         Ok(action)
     }
 
+    /// Record wake only for results present at the first fold after the claim.
+    fn observe_fold_wake(
+        &self,
+        session: SessionId,
+        turn: Option<MessageId>,
+        woken: Option<i64>,
+        events: &[Event],
+        message: &swarmy_core::Message,
+    ) {
+        if let (Some(turn), Some(woken)) = (turn, woken) {
+            let patches = super::tools::woken_patches(events, message, woken);
+            if !patches.is_empty() {
+                self.store.observe_turn_metrics(session, turn, patches);
+            }
+        }
+    }
+
     pub(super) async fn step(&self, ctx: &mut StepContext) -> Result<()> {
         let Some(snapshot) = self.prepare_step(ctx).await? else {
             return Ok(());
@@ -203,9 +223,11 @@ impl Worker {
             snapshot,
             events,
             turn,
+            woken_ns,
         } = ctx;
         let snapshot = snapshot.as_ref().context("step snapshot missing")?;
         let (lease, turn, id) = (lease.as_ref(), *turn, session.session_id);
+        let mut woken_ns = *woken_ns;
         loop {
             if self
                 .interrupt_if_requested(&mut *session, lease, snapshot, &mut *events, turn)
@@ -216,6 +238,8 @@ impl Worker {
             let action = self
                 .action_at_boundary(session, lease, snapshot, events)
                 .await?;
+            // A later fold follows tools this worker ran itself.
+            let woken = woken_ns.take();
             match action {
                 Action::BuildInference(request) => {
                     return self
@@ -228,28 +252,27 @@ impl Worker {
                         .await;
                 }
                 Action::DispatchTools(calls) => {
+                    if self
+                        .refuse_mixed_gpu_batch(session, lease, events, &calls)
+                        .await?
+                    {
+                        continue;
+                    }
                     let display = self.session_display(session).await?;
                     if self.store.ensure_session_computer(id).await.is_ok()
                         && calls
                             .iter()
                             .all(|call| self.can_dispatch_tool(call, display))
                     {
-                        return self.dispatch_calls(session, lease, &calls, turn).await;
+                        match self
+                            .dispatch_calls(session, lease, events, &calls, turn)
+                            .await?
+                        {
+                            DispatchOutcome::Sent | DispatchOutcome::Parked => return Ok(()),
+                            DispatchOutcome::Failed => continue,
+                        }
                     }
-                    let batch: Vec<_> = calls
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, call)| Event::ToolCallRequested {
-                            seq: 0,
-                            request_id: RequestId::for_step(
-                                id,
-                                session.head_seq
-                                    + 1
-                                    + u64::try_from(index).expect("batch fits u64"),
-                            ),
-                            call,
-                        })
-                        .collect();
+                    let batch = tool_requests(session, &calls);
                     self.append(&mut *session, lease, &mut *events, &batch)
                         .await?;
                     if self
@@ -260,6 +283,7 @@ impl Worker {
                     }
                 }
                 Action::FoldResults(message) => {
+                    self.observe_fold_wake(id, turn, woken, events, &message);
                     return self
                         .fold_results(&mut *session, lease, snapshot, &mut *events, message)
                         .await;
@@ -308,7 +332,7 @@ impl Worker {
             .interrupt_if_requested(session, lease, &snapshot, events, turn)
             .await?
             || self
-                .handle_inference_wait(session, turn, lease, &snapshot, events)
+                .handle_session_wait(session, turn, lease, &snapshot, events)
                 .await?
         {
             return Ok(None);
@@ -384,6 +408,17 @@ impl Worker {
                     .checked_add(1)
                     .context("sequence overflow")?,
             ));
+        let unrequested = snapshot.replay(events).unrequested_tool_calls();
+        if !unrequested.is_empty() {
+            self.fail_dispatch(
+                session,
+                lease,
+                events,
+                &Dispatch::Calls(&unrequested),
+                "The tool call did not run: the operator interrupted the turn.",
+            )
+            .await?;
+        }
         self.append(
             session,
             lease,
@@ -392,12 +427,12 @@ impl Worker {
         )
         .await?;
         session.interrupt_requested = true;
-        self.store.clear_inference_wait(session.session_id).await?;
+        self.store.clear_session_wait(session.session_id).await?;
         self.finish(session, lease, snapshot, events, turn).await?;
         Ok(true)
     }
 
-    pub(super) async fn handle_inference_wait(
+    pub(super) async fn handle_session_wait(
         &self,
         session: &mut SessionRecord,
         turn: Option<MessageId>,
@@ -421,10 +456,11 @@ impl Worker {
         ) {
             self.store.clear_inference_wait(id).await?;
         }
-        if let Some(wait) = self.store.inference_wait(id).await?
+        if let Some(wait) = self.store.session_wait(id).await?
+            && wait.inference().is_some()
             && wait
                 .since
-                .checked_add(self.config.max_inference_wait)
+                .checked_add(self.config.max_session_wait)
                 .is_ok_and(|limit| Timestamp::now() >= limit)
         {
             let request_id = events
@@ -446,15 +482,15 @@ impl Worker {
                 request_id,
                 error: format!(
                     "inference wait exceeded: {} ({} attempts)",
-                    wait.reasons.join("; "),
-                    wait.attempts
+                    wait.reasons(None).join("; "),
+                    wait.inference().map_or(0, |h| h.attempts)
                 ),
                 retryable: false,
                 retry_at: None,
                 failure_kind: swarmy_core::FailureKind::WaitExceeded,
             };
             self.append(session, lease, events, &[terminal]).await?;
-            self.store.clear_inference_wait(id).await?;
+            self.store.clear_session_wait(id).await?;
             self.finish(session, lease, snapshot, events, turn).await?;
             return Ok(true);
         }
@@ -472,10 +508,11 @@ impl Worker {
             )
         }) {
             let now = Timestamp::now();
-            let wait = self.store.inference_wait(id).await?;
+            let wait = self.store.session_wait(id).await?;
             if wait
                 .as_ref()
-                .is_none_or(|wait| wait.last_failure_seq != *seq)
+                .and_then(swarmy_store::SessionWait::inference)
+                .is_none_or(|h| h.last_failure_seq != *seq)
             {
                 return self
                     .failover_or_park(session, lease, *seq, (error, *failure_kind), *retry_at, now)
@@ -512,7 +549,7 @@ impl Worker {
                         failure_kind,
                         retry_at,
                         route_step: session.route_step,
-                        max_wait: self.config.max_inference_wait,
+                        max_wait: self.config.max_session_wait,
                     },
                     super::route_selection(session, &self.config, now),
                 )
@@ -783,7 +820,7 @@ impl Worker {
                 .await?;
             let bytes = encode(&replayed)?;
             let reference = SnapshotRef {
-                object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
+                object_key: swarmy_core::blob_key(&bytes),
                 seq: head,
             };
             self.blobs.put(&reference.object_key, bytes.into()).await?;
@@ -892,4 +929,21 @@ pub(super) fn pending_tools(events: &[Event]) -> Vec<PendingCall> {
 pub(super) struct PendingCall {
     pub(super) request_id: RequestId,
     pub(super) call: ToolCallRecord,
+}
+
+/// Construct the request events for a direct dispatch or a failed capacity wait.
+pub(super) fn tool_requests(session: &SessionRecord, calls: &[ToolCallRecord]) -> Vec<Event> {
+    calls
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, call)| Event::ToolCallRequested {
+            seq: 0,
+            request_id: RequestId::for_step(
+                session.session_id,
+                session.head_seq + 1 + u64::try_from(index).expect("batch fits u64"),
+            ),
+            call,
+        })
+        .collect()
 }

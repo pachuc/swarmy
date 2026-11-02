@@ -1,14 +1,15 @@
 #![deny(clippy::disallowed_methods)]
 #![cfg(target_os = "linux")]
 use std::{
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Arc,
     time::Duration,
 };
 use swarmy_core::{
-    AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
-    SandboxSpec, VolumeId, ignore_best_effort,
+    AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, LeaseOwnerId, ManifestId, NodeId,
+    Sandbox, SandboxSpec, VolumeId, WriterOpening, ignore_best_effort,
 };
 use swarmy_store::{Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
@@ -28,10 +29,12 @@ struct Node {
     child: Option<Child>,
     settings: swarmy_config::Settings,
     id: NodeId,
+    store: Store,
+    api: swarmy_node_api::test_support::TestApi,
 }
 
 impl Node {
-    fn new(mut settings: swarmy_config::Settings) -> Self {
+    async fn new(mut settings: swarmy_config::Settings, store: &Store) -> Self {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(".swarmy")).unwrap();
         let id = NodeId::from_ulid(ulid::Ulid::generate());
@@ -39,6 +42,25 @@ impl Node {
         settings.node.heartbeat_interval_ms = Duration::from_millis(100);
         settings.node.capacity.cpu_millis = 4000;
         settings.node.capacity.memory_bytes = 15 * 1024 * 1024 * 1024;
+        let bus =
+            swarmy_bus::Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
+                .await
+                .unwrap();
+        bus.setup(&[]).await.unwrap();
+        let api = swarmy_node_api::test_support::TestApi::start(swarmy_node_api::router(
+            swarmy_node_api::NodeApiState::new(
+                store.clone(),
+                bus,
+                swarmy_node_api::NodeApiPolicy::from_settings(&settings),
+            ),
+        ))
+        .await;
+        let token = store.issue_node_credential(id).await.unwrap();
+        let token_file = root.path().join("node-token");
+        std::fs::write(&token_file, format!("{}\n", token.reveal())).unwrap();
+        std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        settings.node.api_url = api.url().to_owned();
+        settings.node.token_file = token_file;
         std::fs::write(
             root.path().join(".swarmy/config.toml"),
             settings.to_toml().unwrap(),
@@ -49,7 +71,24 @@ impl Node {
             child: None,
             settings,
             id,
+            store: store.clone(),
+            api,
         }
+    }
+
+    /// Caller-acquired writer for the node's control socket.
+    async fn writer(&self, volume: VolumeId) -> WriterOpening {
+        self.store
+            .open_writer_lease(volume, LeaseOwnerId::from(self.id), Duration::from_secs(60))
+            .await
+            .unwrap()
+    }
+
+    fn pause_api(&mut self) {
+        self.api.pause();
+    }
+    async fn resume_api(&mut self) {
+        self.api.resume().await;
     }
 
     fn start(&mut self) {
@@ -59,8 +98,7 @@ impl Node {
             .open(self.root.path().join("node.log"))
             .unwrap();
         self.child = Some(
-            Command::new(swarmy_testkit::bin("swarmy-core"))
-                .arg("node")
+            Command::new(env!("CARGO_BIN_EXE_swarmy-node"))
                 .current_dir(self.root.path())
                 .envs(self.settings.environment())
                 .stdin(Stdio::null())
@@ -124,6 +162,7 @@ impl Node {
                     requirements,
                 },
                 disk: BlockDevice { volume_id },
+                writer: self.writer(volume_id).await,
             })
             .await
         {
@@ -333,7 +372,7 @@ async fn store(settings: &swarmy_config::Settings) -> Store {
         Some(&directory),
         // The node reads large tool payloads in a separate process.
         Arc::new(ObjectBlobStore::new(
-            swarmy_store::objects::from_settings(settings).unwrap(),
+            swarmy_volume::objects::from_settings(settings).unwrap(),
         )),
     )
     .await
@@ -412,7 +451,7 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
         )
         .await
         .unwrap();
-    let mut node = Node::new(settings);
+    let mut node = Node::new(settings, &store).await;
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
     let (agent, sandbox, scratch_root) = scratch_mounts(&node, &store, base).await;
@@ -450,6 +489,7 @@ async fn scratch_mounts(
         .request(Request::Create {
             spec,
             disk: BlockDevice { volume_id: volume },
+            writer: node.writer(volume).await,
         })
         .await
     {
@@ -505,7 +545,7 @@ async fn scratch_snapshots(node: &Node, store: &Store, sandbox: &Sandbox) {
         Response::Checkpointed(manifest) => manifest,
         response => panic!("checkpoint: {response:?}"),
     };
-    let objects = swarmy_store::objects::from_settings(&node.settings).unwrap();
+    let objects = swarmy_volume::objects::from_settings(&node.settings).unwrap();
     let first_manifest =
         swarmy_volume::Manifest::load(&*objects, store.get_manifest(first).await.unwrap().unwrap())
             .await
@@ -612,6 +652,7 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
                     requirements: swarmy_core::SandboxRequirements::default(),
                 },
                 disk: BlockDevice { volume_id: volume },
+                writer: node.writer(volume).await,
             })
             .await
         {
@@ -694,6 +735,7 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
             disk: BlockDevice {
                 volume_id: third_volume,
             },
+            writer: node.writer(third_volume).await,
         })
         .await
     {
@@ -786,7 +828,12 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
         .await
         .unwrap();
-    let mut node = Node::new(settings);
+    settings.node.fake_gpu = Some(swarmy_core::GpuCards {
+        model: "Fake L4".into(),
+        memory_mib: 23034,
+        count: 1,
+    });
+    let mut node = Node::new(settings, &store).await;
     let before = jiff::Timestamp::now();
     node.start();
     node.ready(&store, before).await;
@@ -802,7 +849,11 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     eprintln!("acceptance 5 passed: no memory pause or hardware virtualization");
     let volume = VolumeId::from_ulid(ulid::Ulid::generate());
     store.create_volume(volume, base).await.unwrap();
-    let missing = VolumeId::from_ulid(ulid::Ulid::generate());
+    // The caller acquires the writer, so a missing volume never reaches the
+    // node. A grant whose head cannot be loaded is the failure the node sees:
+    // creation fails, releases the lease, and leaves no bundle behind.
+    let mut unloadable = node.writer(volume).await;
+    unloadable.header.root_hash = swarmy_core::ContentHash([7; 32]);
     assert!(matches!(
         node.request(Request::Create {
             spec: SandboxSpec {
@@ -811,7 +862,8 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
 
                 requirements: swarmy_core::SandboxRequirements::default(),
             },
-            disk: BlockDevice { volume_id: missing },
+            disk: BlockDevice { volume_id: volume },
+            writer: unloadable,
         })
         .await,
         Response::Error(_)
@@ -935,7 +987,7 @@ async fn root_dev_stack_uses_sandbox_loopback() {
         .expect("build SWARMY_TEST_DEV_IMAGE before this test");
     let volume = VolumeId::from_ulid(ulid::Ulid::generate());
     store.create_volume(volume, image).await.unwrap();
-    let mut node = Node::new(settings);
+    let mut node = Node::new(settings, &store).await;
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
     // Production sandboxes run with the image's scratch mounts and memory
@@ -975,6 +1027,7 @@ async fn root_dev_stack_uses_sandbox_loopback() {
 async fn registration(node: &Node, store: &Store) {
     let first = store.get_node(node.id).await.unwrap().unwrap();
     assert_eq!(first.roles, node.settings.node.roles);
+    assert_eq!(first.gpu, node.settings.node.fake_gpu);
     assert_eq!(first.capacity, node.settings.node.capacity);
     let second = swarmy_testkit::eventually(
         "node heartbeat advances",
@@ -1026,7 +1079,13 @@ async fn pause_resume_timeout(node: &Node, sandbox: Sandbox) {
         Response::Paused(handle) => handle,
         response => panic!("pause: {response:?}"),
     };
-    let sandbox = match node.request(Request::Resume(pause)).await {
+    let sandbox = match node
+        .request(Request::Resume {
+            writer: node.writer(pause.disk.volume_id).await,
+            handle: pause,
+        })
+        .await
+    {
         Response::Sandbox(sandbox) => sandbox,
         response => panic!("resume: {response:?}"),
     };
@@ -1124,8 +1183,8 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
     let config = ServerConfig {
         directory: node.root.path().join(".swarmy/volumes"),
         node: node.id,
-        store: store.clone(),
-        objects: swarmy_store::objects::from_settings(&node.settings).unwrap(),
+        metadata: Arc::new(store.clone()),
+        objects: swarmy_volume::objects::from_settings(&node.settings).unwrap(),
     };
     let command = "sleep 0.1; echo tool-priority";
     let start = std::time::Instant::now();

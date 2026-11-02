@@ -30,6 +30,8 @@ postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 swarmy-core.workspace = true
+swarmy-sandbox.workspace = true
+swarmy-volume.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -44,4 +46,5 @@ rand.workspace = true
 swarmy-store = { path = ".", features = ["test-support"] }
 swarmy-testkit.workspace = true
 tempfile.workspace = true
+tracing-subscriber.workspace = true
 swarmy-volume = { workspace = true, features = ["test-support"] }

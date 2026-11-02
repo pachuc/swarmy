@@ -311,6 +311,32 @@ async fn failure_is_structured_and_redacted() {
     assert!(!display.contains(SECRET) && !format!("{error:?}").contains(SECRET));
 }
 #[tokio::test]
+async fn a_setting_may_equal_a_variable_value() {
+    let fixture = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let tofu = Tofu::from_binary(fake_tofu(fixture.path(), DEFAULT, OUTPUTS), cache.path());
+    let workspace = tofu.workspace(
+        work.path(),
+        CredentialEnv::new()
+            .with("HCLOUD_TOKEN", SECRET)
+            .with_setting("AWS_REGION", "us-west-2"),
+    );
+    let mut vars = variables();
+    vars.insert("location".into(), "us-west-2".into());
+    workspace.prepare(&module(), &vars).await.unwrap();
+    assert!(
+        std::fs::read_to_string(work.path().join(VARIABLES_FILE))
+            .unwrap()
+            .contains("us-west-2")
+    );
+    vars.insert("secret".into(), SECRET.into());
+    assert!(matches!(
+        workspace.prepare(&module(), &vars).await,
+        Err(Error::SecretInFiles { name }) if name == "HCLOUD_TOKEN"
+    ));
+}
+#[tokio::test]
 async fn secret_and_bad_paths() {
     let fixture = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();

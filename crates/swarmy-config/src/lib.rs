@@ -17,7 +17,10 @@ mod bucket;
 mod names;
 pub use bucket::{BucketCredentials, BucketSpec, ownership_marker_key};
 pub use exports::parse_exports;
-pub use names::{default_sandboxes, validate_name, validate_service_user};
+pub use names::{
+    DEFAULT_CREATED_LOCAL_STORAGE, default_sandboxes, is_opentofu_name, validate_name,
+    validate_service_user,
+};
 pub use object::ObjectPrefix;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -26,9 +29,33 @@ use std::{
     time::Duration,
 };
 
+/// Known removed keys and their replacements, reported before typed decoding.
+const REMOVED_KEYS: &[(&str, &str, &str)] = &[(
+    "inference",
+    "max_wait_secs",
+    "[scheduler] max_session_wait_secs (SWARMY_MAX_SESSION_WAIT_SECONDS), removed 2026-10-29",
+)];
+
+fn removed_keys(table: &toml::Table) -> Vec<String> {
+    REMOVED_KEYS
+        .iter()
+        .filter(|(section, key, _)| {
+            table
+                .get(*section)
+                .and_then(toml::Value::as_table)
+                .is_some_and(|entry| entry.contains_key(*key))
+        })
+        .map(|(section, key, replacement)| {
+            format!("[{section}] {key} was removed; use {replacement}")
+        })
+        .collect()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("unknown cloud provider \"{0}\"; expected one of hetzner-cloud, hetzner-s3, aws")]
+    #[error(
+        "unknown cloud provider \"{0}\"; expected one of hetzner-cloud, hetzner-s3, aws, scaleway"
+    )]
     UnknownCloudProvider(String),
     #[error("cloud credentials: {0}")]
     CloudCredential(String),
@@ -83,6 +110,8 @@ pub enum Error {
     StoreDirectory(&'static str),
     #[error("configuration I/O: {0}")]
     Io(#[from] std::io::Error),
+    #[error("invalid configuration in {}: {message}", path.display())]
+    InvalidFile { path: PathBuf, message: String },
     #[error("invalid configuration: {0}")]
     Decode(#[from] toml::de::Error),
     #[error("cannot encode configuration: {0}")]
@@ -174,7 +203,7 @@ mod duration {
 const DEFAULT_VOLUME_SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
 const DEFAULT_VOLUME_SNAPSHOT_RETENTION: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(10).expect("snapshot retention count is nonzero");
-const DEFAULT_INFERENCE_MAX_WAIT: Duration = Duration::from_secs(3600);
+const DEFAULT_MAX_SESSION_WAIT: Duration = Duration::from_secs(3600);
 const DEFAULT_INFERENCE_MAX_BACKOFF: Duration = Duration::from_secs(300);
 const DEFAULT_INFERENCE_GATEWAY_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_METERING_RAW_RETENTION_DAYS: std::num::NonZeroU64 =
@@ -239,8 +268,6 @@ pub struct GarbageCollection {
 #[serde(default, deny_unknown_fields)]
 pub struct Inference {
     #[serde(with = "duration::secs")]
-    pub max_wait_secs: Duration,
-    #[serde(with = "duration::secs")]
     pub max_backoff_secs: Duration,
     #[serde(with = "duration::secs")]
     pub gateway_wait_secs: Duration,
@@ -250,7 +277,6 @@ pub struct Inference {
 impl Default for Inference {
     fn default() -> Self {
         Self {
-            max_wait_secs: DEFAULT_INFERENCE_MAX_WAIT,
             max_backoff_secs: DEFAULT_INFERENCE_MAX_BACKOFF,
             gateway_wait_secs: DEFAULT_INFERENCE_GATEWAY_WAIT,
             default_route: None,
@@ -420,6 +446,8 @@ pub struct SchedulerSettings {
     pub ephemeral_retention_secs: Duration,
     #[serde(with = "duration::secs")]
     pub placement_lease_secs: Duration,
+    #[serde(with = "duration::secs")]
+    pub max_session_wait_secs: Duration,
 }
 impl Default for SchedulerSettings {
     fn default() -> Self {
@@ -429,6 +457,7 @@ impl Default for SchedulerSettings {
             resend_interval_ms: DEFAULT_SCHEDULER_RESEND_INTERVAL,
             ephemeral_retention_secs: DEFAULT_EPHEMERAL_RETENTION,
             placement_lease_secs: DEFAULT_PLACEMENT_LEASE,
+            max_session_wait_secs: DEFAULT_MAX_SESSION_WAIT,
         }
     }
 }
@@ -449,11 +478,19 @@ impl Default for GatewaySettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NodeSettings {
+    /// Node API root through the SSH tunnel on joined nodes.
+    pub api_url: String,
+    /// File holding this node's API token, mode 0600.
+    pub token_file: PathBuf,
     pub id: Option<swarmy_core::NodeId>,
     pub roles: Vec<swarmy_core::NodeRole>,
     pub capacity: swarmy_core::NodeCapacity,
     /// When set, advertise RAM minus this reserve as sandbox memory.
     pub memory_reserve_mib: Option<u64>,
+    /// Advertise these cards instead of probing nvidia-smi; for CPU-only tests and the dev stack.
+    pub fake_gpu: Option<swarmy_core::GpuCards>,
+    /// JSON CDI spec for real GPU sandboxes, read once at node start.
+    pub cdi_spec: PathBuf,
     #[serde(with = "duration::ms")]
     pub heartbeat_interval_ms: Duration,
 }
@@ -461,13 +498,31 @@ impl Default for NodeSettings {
     fn default() -> Self {
         Self {
             id: None,
+            api_url: "http://127.0.0.1:8743".into(),
+            token_file: "/etc/swarmy/node-token".into(),
             roles: vec![
                 swarmy_core::NodeRole::Sandbox,
                 swarmy_core::NodeRole::Volume,
             ],
             capacity: DEFAULT_NODE_CAPACITY,
             memory_reserve_mib: None,
+            fake_gpu: None,
+            cdi_spec: "/etc/cdi/nvidia.json".into(),
             heartbeat_interval_ms: DEFAULT_NODE_HEARTBEAT_INTERVAL,
+        }
+    }
+}
+
+/// Node API service on the primary.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NodeApiSettings {
+    pub listen: String,
+}
+impl Default for NodeApiSettings {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:8743".into(),
         }
     }
 }
@@ -579,6 +634,7 @@ pub struct Settings {
     pub inference: Inference,
     pub metering: Metering,
     pub node: NodeSettings,
+    pub node_api: NodeApiSettings,
     pub store: StoreSettings,
     pub s3: S3Settings,
     pub bus: BusSettings,
@@ -597,6 +653,8 @@ pub struct Settings {
 pub struct SandboxSettings {
     #[serde(with = "duration::secs")]
     pub idle_secs: Duration,
+    /// Concurrent boot-set object requests (clamped to one at use).
+    pub boot_prefetch_concurrency: usize,
     pub scratch_idle_days: u64,
     pub scratch_high_water: u8,
     pub scratch_low_water: u8,
@@ -606,6 +664,7 @@ impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
             idle_secs: DEFAULT_SANDBOX_IDLE,
+            boot_prefetch_concurrency: 32,
             scratch_idle_days: 7,
             scratch_high_water: 80,
             scratch_low_water: 70,
@@ -638,6 +697,7 @@ impl Default for Settings {
             inference: Inference::default(),
             metering: Metering::default(),
             node: NodeSettings::default(),
+            node_api: NodeApiSettings::default(),
             store: StoreSettings::default(),
             s3: S3Settings::default(),
             bus: BusSettings::default(),
@@ -733,6 +793,16 @@ pub fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
             _ = interrupt.recv() => {},
             _ = terminate.recv() => {},
         }
+    }
+}
+
+/// Turn off Nagle's algorithm on a socket a service accepted. The node and
+/// public APIs answer small requests that often overlap on one connection;
+/// with Nagle a response written while an earlier one is unacknowledged waits
+/// a full round trip for that acknowledgement.
+pub fn without_nagle(stream: &mut tokio::net::TcpStream) {
+    if let Err(error) = stream.set_nodelay(true) {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "could not set TCP_NODELAY on an accepted connection");
     }
 }
 
@@ -884,7 +954,20 @@ impl Settings {
         if table.remove("remote").is_some() {
             tracing::warn!(path = %path.display(), "ignoring the removed [remote] section; delete it (swarms are described in ~/.config/swarmy/swarms/NAME.toml)");
         }
-        let settings: Self = table.try_into()?;
+        let removed = removed_keys(&table);
+        if !removed.is_empty() {
+            return Err(Error::InvalidFile {
+                path: path.to_owned(),
+                message: removed.join("; "),
+            });
+        }
+        let settings: Self =
+            table
+                .try_into()
+                .map_err(|error: toml::de::Error| Error::InvalidFile {
+                    path: path.to_owned(),
+                    message: error.to_string(),
+                })?;
         settings.validate()?;
         settings.catalog()?;
         Ok(settings)
@@ -930,6 +1013,14 @@ impl Settings {
             if value < Duration::from_millis(30) {
                 return Err(Error::Environment(name.into()));
             }
+        }
+        if self
+            .node
+            .fake_gpu
+            .as_ref()
+            .is_some_and(|gpu| gpu.model.trim().is_empty() || gpu.memory_mib == 0 || gpu.count == 0)
+        {
+            return Err(Error::Environment("SWARMY_NODE_FAKE_GPU".into()));
         }
         Ok(())
     }
@@ -1028,9 +1119,10 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_FAKE_CALL_LOG", |s, v, _| assign(&mut s.fake.call_log, v), |s| Some(s.fake.call_log.to_string_lossy().into_owned())),
     e!("SWARMY_IMAGE_UPLOAD_MAX_BYTES", |s, v, _| assign(&mut s.image.upload_max_bytes, v), |s| Some(s.image.upload_max_bytes.to_string())),
     e!("SWARMY_EPHEMERAL_RETENTION_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.ephemeral_retention_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.ephemeral_retention_secs, duration::Unit::Secs))),
+    e!("SWARMY_SANDBOX_BOOT_PREFETCH_CONCURRENCY", |s, v, _| assign(&mut s.sandbox.boot_prefetch_concurrency, v), |s| Some(s.sandbox.boot_prefetch_concurrency.to_string())),
     e!("SWARMY_SANDBOX_IDLE_SECONDS", |s, v, _| assign_duration(&mut s.sandbox.idle_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.sandbox.idle_secs, duration::Unit::Secs))),
     e!("SWARMY_PLACEMENT_LEASE_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.placement_lease_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.placement_lease_secs, duration::Unit::Secs))),
-    e!("SWARMY_INFERENCE_MAX_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_wait_secs, duration::Unit::Secs))),
+    e!("SWARMY_MAX_SESSION_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.max_session_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.max_session_wait_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_backoff_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_backoff_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.gateway_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.gateway_wait_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_DEFAULT_ROUTE", |s, v, _| { assign_opt_string(&mut s.inference.default_route, v); Ok(()) }, |s| Some(s.inference.default_route.clone().unwrap_or_default())),
@@ -1042,6 +1134,11 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_GC_BATCH_SIZE", |s, v, _| assign(&mut s.gc.batch_size, v), |s| Some(s.gc.batch_size.to_string())),
     e!("SWARMY_GC_DELETE_CONCURRENCY", |s, v, _| assign(&mut s.gc.delete_concurrency, v), |s| Some(s.gc.delete_concurrency.to_string())),
     e!("SWARMY_METERING_RAW_RETENTION_DAYS", |s, v, _| assign(&mut s.metering.raw_retention_days, v), |s| Some(s.metering.raw_retention_days.to_string())),
+    e!("SWARMY_NODE_API_LISTEN", |s, v, _| assign(&mut s.node_api.listen, v), |s| Some(s.node_api.listen.clone())),
+    e!("SWARMY_NODE_API_URL", |s, v, _| assign(&mut s.node.api_url, v), |s| Some(s.node.api_url.clone())),
+    e!("SWARMY_NODE_TOKEN_FILE", |s, v, _| assign(&mut s.node.token_file, v), |s| Some(s.node.token_file.to_string_lossy().into_owned())),
+    e!("SWARMY_NODE_FAKE_GPU", set_node_fake_gpu, |s| s.node.fake_gpu.as_ref().map(|g| format!("{},{},{}", g.model, g.memory_mib, g.count))),
+    e!("SWARMY_NODE_CDI_SPEC", |s, v, _| assign(&mut s.node.cdi_spec, v), |s| Some(s.node.cdi_spec.to_string_lossy().into_owned())),
     e!("SWARMY_NODE_ROLES", set_node_roles, |s| Some(format_node_roles(s))),
     e!("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", |s, v, _| assign_duration(&mut s.node.heartbeat_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.node.heartbeat_interval_ms, duration::Unit::Millis))),
     e!("SWARMY_NODE_CPU_MILLIS", |s, v, _| assign(&mut s.node.capacity.cpu_millis, v), |s| Some(s.node.capacity.cpu_millis.to_string())),
@@ -1151,6 +1248,26 @@ fn set_models(
     Ok(())
 }
 
+fn set_node_fake_gpu(
+    settings: &mut Settings,
+    value: &str,
+    _env: &BTreeMap<String, String>,
+) -> Result<(), ()> {
+    let mut parts = value.rsplitn(3, ',');
+    let count: u32 = parts.next().ok_or(())?.trim().parse().map_err(|_| ())?;
+    let memory_mib: u64 = parts.next().ok_or(())?.trim().parse().map_err(|_| ())?;
+    let model = parts.next().ok_or(())?.trim();
+    if model.is_empty() || count == 0 || memory_mib == 0 {
+        return Err(());
+    }
+    settings.node.fake_gpu = Some(swarmy_core::GpuCards {
+        model: model.into(),
+        memory_mib,
+        count,
+    });
+    Ok(())
+}
+
 fn set_node_roles(
     settings: &mut Settings,
     value: &str,
@@ -1191,6 +1308,39 @@ fn set_node_id(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+
+    #[test]
+    fn a_removed_key_names_its_replacement_and_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[inference]\nmax_wait_secs = 30\n").unwrap();
+        let error = Settings::read(&path).err().unwrap().to_string();
+        assert!(error.contains(&path.display().to_string()));
+        assert!(error.contains("[inference] max_wait_secs was removed"));
+        assert!(error.contains("[scheduler] max_session_wait_secs"));
+    }
+
+    #[test]
+    fn an_unknown_key_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[api]\nbogus = 1\n").unwrap();
+        let error = Settings::read(&path).err().unwrap().to_string();
+        assert!(error.contains(&path.display().to_string()));
+        assert!(error.contains("bogus"));
+    }
+
+    #[tokio::test]
+    async fn accepted_sockets_skip_nagle() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (client, accepted) =
+            tokio::join!(tokio::net::TcpStream::connect(address), listener.accept());
+        let _client = client.unwrap();
+        let (mut stream, _) = accepted.unwrap();
+        without_nagle(&mut stream);
+        assert!(stream.nodelay().unwrap());
+    }
 
     pub(crate) fn load_from(
         cwd: &Path,
@@ -1275,6 +1425,48 @@ mod tests {
                     .apply_environment(&BTreeMap::from([(name.into(), "0".into())]))
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn fake_gpu_parses_and_rejects_invalid_values() {
+        let mut settings = Settings::default();
+        settings
+            .apply_environment(&BTreeMap::from([(
+                "SWARMY_NODE_FAKE_GPU".into(),
+                "NVIDIA L4, rev 2,23034,2".into(),
+            )]))
+            .unwrap();
+        assert_eq!(
+            settings.node.fake_gpu,
+            Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4, rev 2".into(),
+                memory_mib: 23034,
+                count: 2
+            })
+        );
+        for value in ["x,0,1", "x,1,0", ",1,1", "x,1"] {
+            assert!(
+                Settings::default()
+                    .apply_environment(&BTreeMap::from([(
+                        "SWARMY_NODE_FAKE_GPU".into(),
+                        value.into()
+                    )]))
+                    .is_err()
+            );
+        }
+        let text = settings.to_toml().unwrap();
+        assert!(text.contains("[node.fake_gpu]"));
+        let decoded: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(decoded.node.fake_gpu, settings.node.fake_gpu);
+        for (model, memory_mib, count) in [("", 1, 1), ("x", 0, 1), ("x", 1, 0)] {
+            let mut invalid = Settings::default();
+            invalid.node.fake_gpu = Some(swarmy_core::GpuCards {
+                model: model.into(),
+                memory_mib,
+                count,
+            });
+            assert!(invalid.validate().is_err());
         }
     }
 
@@ -1610,8 +1802,9 @@ mod tests {
             ("SWARMY_IMAGE_UPLOAD_MAX_BYTES", "12345"),
             ("SWARMY_EPHEMERAL_RETENTION_SECONDS", "123"),
             ("SWARMY_SANDBOX_IDLE_SECONDS", "124"),
+            ("SWARMY_SANDBOX_BOOT_PREFETCH_CONCURRENCY", "8"),
             ("SWARMY_PLACEMENT_LEASE_SECONDS", "125"),
-            ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", "126"),
+            ("SWARMY_MAX_SESSION_WAIT_SECONDS", "126"),
             ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", "127"),
             ("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", "128"),
             ("SWARMY_INFERENCE_DEFAULT_ROUTE", "test-route"),
@@ -1623,6 +1816,9 @@ mod tests {
             ("SWARMY_GC_BATCH_SIZE", "123"),
             ("SWARMY_GC_DELETE_CONCURRENCY", "33"),
             ("SWARMY_METERING_RAW_RETENTION_DAYS", "7"),
+            ("SWARMY_NODE_API_LISTEN", "127.0.0.1:9997"),
+            ("SWARMY_NODE_API_URL", "http://127.0.0.1:9996"),
+            ("SWARMY_NODE_TOKEN_FILE", "/tmp/test-node-token"),
             ("SWARMY_NODE_ROLES", "volume"),
             ("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", "7777"),
             ("SWARMY_NODE_CPU_MILLIS", "4001"),
@@ -1630,6 +1826,8 @@ mod tests {
             ("SWARMY_NODE_MEMORY_BYTES", "2147483648"),
             ("SWARMY_NODE_DISK_BYTES", "21474836480"),
             ("SWARMY_NODE_SANDBOXES", "7"),
+            ("SWARMY_NODE_FAKE_GPU", "Fake L4,23034,1"),
+            ("SWARMY_NODE_CDI_SPEC", "/srv/cdi/test.json"),
         ];
         let mut exported = BTreeMap::new();
         for (name, value) in distinct {

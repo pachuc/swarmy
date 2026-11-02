@@ -7,11 +7,15 @@
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
 #   Sandbox nodes require it; control-only nodes use the root disk. PREBUILT
 #   true installs the uploaded bundle from <node dir>/.swarmy/release; false
-#   builds on the node from <node dir>/source.
+#   builds on the node from <node dir>/source. Node mode installs only
+#   swarmy-node, not the FoundationDB client or backing tools.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 parse_provision_args "$@"
 validate_service_user "$service_user"
+# parse_provision_args assigns sandboxes through the sourced helper.
+# shellcheck disable=SC2154
+check_node_memory "$sandboxes"
 ensure_service_user "$service_user"
 # Privileged setup runs as any sudoer, but the build and the units belong to
 # the service user; re-enter as that user so files land owned correctly.
@@ -58,12 +62,17 @@ sudo apt-get update
 packages=(curl rsync runc passt iproute2 util-linux e2fsprogs debootstrap)
 if [[ $prebuilt == false ]]; then packages+=(build-essential pkg-config libssl-dev clang libclang-dev); fi
 sudo -E apt-get install -y "${packages[@]}"
-printf 'nbd\nublk_drv\n' | sudo tee /etc/modules-load.d/swarmy.conf >/dev/null
+printf 'nbd\nublk_drv\n' | install_owned_file "$(swarmy_modules_file)"
 # Some Ubuntu kernels ship these drivers outside the base package.
 if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then
     sudo -E apt-get install -y "linux-modules-extra-$(uname -r)"
     sudo modprobe nbd nbds_max=64
     sudo modprobe ublk_drv
+fi
+
+# Prepare the driver, toolkit and CDI spec only on machines with NVIDIA cards.
+if nvidia_card_present; then
+    provision_nvidia
 fi
 
 # Sandbox scratch lives on local storage; control-only nodes keep everything
@@ -116,7 +125,7 @@ if [[ $prebuilt == false ]]; then
 fi
 # A version marker avoids downloading the backing tools again on a rerun.
 tools_hash=$(sha256sum scripts/install-dev-tools.sh | cut -d' ' -f1)
-if [[ ! -f .swarmy/remote-tools-version || $(<.swarmy/remote-tools-version) != "$tools_hash" ]]; then
+if [[ $mode == stack ]] && { [[ ! -f .swarmy/remote-tools-version ]] || [[ $(<.swarmy/remote-tools-version) != "$tools_hash" ]]; }; then
     bash scripts/install-dev-tools.sh
     printf '%s\n' "$tools_hash" > .swarmy/remote-tools-version
 fi
@@ -141,19 +150,24 @@ if [[ $prebuilt == false ]]; then
         SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
     fi
     read_shared_list build_args swarmy_mode_build_args "$mode"
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
+    if [[ $mode == stack ]]; then
+        SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
+    else
+        cargo build --release --locked "${build_args[@]}"
+    fi
     )
     bin_dir=$source_dir/target/release
 else
     bin_dir=$(release_bundle_dir "$repo_dir")
     check_release_bundle "$bin_dir" "$mode"
-    install_core_library "$bin_dir/libfdb_c.so"
+    if [[ $mode == stack ]]; then install_core_library "$bin_dir/libfdb_c.so"; fi
 fi
 # Install from the shared binary list so the install can never name a binary
 # teardown misses. Only built binaries are present, selected per mode above.
 read_shared_list install_binaries swarmy_mode_binaries "$mode"
 sudo install -m 0755 "${install_binaries[@]/#/$bin_dir/}" /usr/local/bin/
 remove_retired_binaries
+if [[ $mode == node ]]; then remove_node_host_leftovers "$repo_dir" "$service_home"; fi
 if [[ $prebuilt == true ]]; then
     printf 'Installed release binaries from %s\n' "$bin_dir"
 else
@@ -161,7 +175,7 @@ else
 fi
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
-node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null
+node_environment "$mode" "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null
 # Static S3 keys arrive over SSH stdin in a root-owned staging file the
 # provisioning user cannot read. Append it verbatim as root in one step and
 # delete it: sourcing the file would expand `$`, backticks and spaces in key
@@ -186,36 +200,28 @@ if [[ $storage_is_mount == true ]]; then unit_mount=$local_mount; fi
 set_unit_inputs "$mode" "$service_user" "$tunnel_primary" "$tunnel_s3" "$unit_mount"
 record_unit_inputs
 provisioned_units=()
-write_units provisioned_units "$stack_dependency" "$node_unit"
+units=()
+if [[ $mode == node ]]; then read_shared_list units swarmy_node_tunnel_units
+else units=("$stack_dependency"); fi
+write_units provisioned_units "${units[@]}" "$node_unit"
+if [[ $mode == node && $tunnel_s3 == false ]]; then sudo rm -f "$(swarmy_systemd_dir)/$(swarmy_objects_tunnel_unit)"; fi
 sudo systemctl daemon-reload
 if [[ $mode == stack ]]; then
     sudo systemctl enable --now "$stack_dependency"
+    issue_local_node_credential "$repo_dir" "/usr/local/bin/$(swarmy_core_binary)"
 else
-    [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
-    sudo systemctl enable "$stack_dependency"
+    sudo systemctl enable "${units[@]}"
     # A new machine's first tunnel connection can fail while its private
     # network or the primary's backing services are still coming up.
     for attempt in 1 2 3 4 5 6; do
-        if sudo systemctl restart "$stack_dependency"; then break; fi
+        if sudo systemctl restart "${units[@]}"; then break; fi
         if ((attempt == 6)); then
-            sudo journalctl -u "$stack_dependency" --no-pager -n 20 >&2 || :
+            for unit in "${units[@]}"; do sudo journalctl -u "$unit" --no-pager -n 20 >&2 || :; done
             exit 1
         fi
         echo "the tunnel to the primary is not up yet; retrying ($attempt/6)" >&2
         sleep 10
     done
 fi
-sudo systemctl enable "$node_unit"
-sudo systemctl restart "$node_unit"
-invocation=$(sudo systemctl show -p InvocationID --value "$node_unit")
-for _ in $(seq 1 60); do
-    if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
-        sudo systemctl is-active "$node_unit"
-        if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi
-        echo "node role (swarmy-core node) registered and ready; $mode mode enabled at boot"
-        exit 0
-    fi
-    sleep 2
-done
-sudo journalctl -u "$node_unit" -n 50 --no-pager
-exit 1
+provision_node_agent "$mode" "$repo_dir"
+if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi

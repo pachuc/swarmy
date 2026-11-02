@@ -342,6 +342,8 @@ async fn agent_inference_settings_create_and_independent_updates() {
         memory_mib: None,
         gpu: None,
         route: None,
+        allow_gpu_request: Some(true),
+        gpu_reason: None,
     };
     let mut expected = store
         .create_agent(
@@ -356,6 +358,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         )
         .await
         .unwrap();
+    assert!(expected.allow_gpu_request);
     assert_eq!(expected.system_prompt, settings.system_prompt);
     assert_eq!(expected.model, settings.model);
     assert_eq!(expected.reasoning_effort, settings.reasoning_effort);
@@ -364,6 +367,10 @@ async fn agent_inference_settings_create_and_independent_updates() {
         Some(expected.clone())
     );
     for patch in [
+        AgentSettings {
+            allow_gpu_request: Some(false),
+            ..Default::default()
+        },
         AgentSettings {
             system_prompt: Some(String::new()),
             ..Default::default()
@@ -377,6 +384,9 @@ async fn agent_inference_settings_create_and_independent_updates() {
             ..Default::default()
         },
     ] {
+        if let Some(allow) = patch.allow_gpu_request {
+            expected.allow_gpu_request = allow;
+        }
         if let Some(prompt) = &patch.system_prompt {
             expected.system_prompt = Some(prompt.clone());
         }
@@ -732,4 +742,86 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
         test.store.get_agent(agent.agent_id).await.unwrap(),
         Some(updated)
     );
+}
+
+#[tokio::test]
+async fn sandbox_spec_prefers_the_agent_then_the_image() {
+    use swarmy_core::{GpuRequirement, SandboxRequirements};
+    use swarmy_store::PutImageOptions;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = ManifestId::from_ulid(Ulid::generate());
+    store
+        .put_manifest(
+            image,
+            &ManifestHeader {
+                size: u64::from(CHUNK_SIZE),
+                chunk_size: CHUNK_SIZE,
+                root_hash: ContentHash::ZERO,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .put_image(
+            "spec",
+            &ImageTag("test".into()),
+            image,
+            Some(PutImageOptions {
+                memory_mib: Some(2048),
+                scratch: vec!["/x".into()],
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let session = store
+        .create_agent_session(
+            SessionId::from_ulid(Ulid::generate()),
+            None,
+            timestamp(0),
+            Some(AgentSessionOptions {
+                image: Some("spec:test"),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let spec = store
+        .sandbox_spec(session.agent_id, session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(spec.requirements.memory_mib, 2048);
+    assert_eq!(spec.requirements.gpu, GpuRequirement::default());
+    assert_eq!(spec.scratch, vec!["/x"]);
+    let agent = store
+        .create_agent("spec-agent", "spec:test", "", timestamp(0), None)
+        .await
+        .unwrap();
+    let named = store
+        .create_agent_session(
+            SessionId::from_ulid(Ulid::generate()),
+            Some(agent.agent_id),
+            timestamp(0),
+            None,
+        )
+        .await
+        .unwrap();
+    let named_spec = store
+        .sandbox_spec(agent.agent_id, named.session_id)
+        .await
+        .unwrap();
+    assert_eq!(named_spec.requirements, agent.requirements);
+    assert_eq!(named_spec.scratch, vec!["/x"]);
+    let missing = store
+        .sandbox_spec(
+            AgentId::from_ulid(Ulid::generate()),
+            SessionId::from_ulid(Ulid::generate()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.requirements, SandboxRequirements::default());
+    assert!(missing.scratch.is_empty());
 }

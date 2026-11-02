@@ -44,7 +44,7 @@ fetch_fdb() {
 }
 
 package() {
-    local component=$1 target=$2 dir=$3 name stage host
+    local component=$1 target=$2 dir=$3 name stage host fdb_dir
     mkdir -p "$dir"
     dir=$(cd "$dir" && pwd)
     work=$(mktemp -d)
@@ -66,13 +66,25 @@ package() {
             name=swarmy-core
             stage="$work/$name-$target"
             mkdir -p "$stage"
-            fetch_fdb "$target" "$work/fdb"
-            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$work/fdb" "$CARGO" build --release --locked --target "$target" -p "$CORE_BIN_PACKAGE" --bin swarmy-core
+            # foundationdb-sys keeps the first FDB_CLIENT_LIB_PATH in its cached
+            # build output and never reruns when it changes, so the library
+            # lives at one stable path per target, never a temporary directory.
+            fdb_dir="$(release_dir "$target")/fdb"
+            fetch_fdb "$target" "$fdb_dir"
+            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$fdb_dir" "$CARGO" build --release --locked --target "$target" -p "$CORE_BIN_PACKAGE" --bin swarmy-core
             install -m 0755 "$(release_dir "$target")/swarmy-core" "$stage/swarmy-core"
-            install -m 0644 "$work/fdb/libfdb_c.so" "$stage/libfdb_c.so"
+            env -u SWARMY_FDB_LIB_DIR "$CARGO" build --release --locked --target "$target" -p swarmyd --bin swarmy-node
+            install -m 0755 "$(release_dir "$target")/swarmy-node" "$stage/swarmy-node"
+            if readelf -d "$stage/swarmy-node" | grep -q 'NEEDED.*libfdb_c'; then fail 'node must not link libfdb_c'; fi
+            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$fdb_dir" "$CARGO" build --release --locked --target "$target" -p swarmy-provisioner --bin swarmy-provisioner
+            install -m 0755 "$(release_dir "$target")/swarmy-provisioner" "$stage/swarmy-provisioner"
+            install -m 0644 "$fdb_dir/libfdb_c.so" "$stage/libfdb_c.so"
             patchelf --set-rpath '$ORIGIN' "$stage/swarmy-core"
             [ "$(patchelf --print-rpath "$stage/swarmy-core")" = '$ORIGIN' ] || fail 'core rpath is not $ORIGIN'
             readelf -d "$stage/swarmy-core" | grep -q 'NEEDED.*\[libfdb_c\.so\]' || fail 'core does not need libfdb_c.so'
+            patchelf --set-rpath '$ORIGIN' "$stage/swarmy-provisioner"
+            [ "$(patchelf --print-rpath "$stage/swarmy-provisioner")" = '$ORIGIN' ] || fail 'provisioner rpath is not $ORIGIN'
+            readelf -d "$stage/swarmy-provisioner" | grep -q 'NEEDED.*\[libfdb_c\.so\]' || fail 'provisioner does not need libfdb_c.so'
             ;;
         image)
             # Build natively with sudo and debootstrap; see images/README.md.
@@ -99,6 +111,8 @@ package() {
         elif [ "$component" = core ]; then
             ldd "$stage/swarmy-core" | grep -F "libfdb_c.so => $stage/libfdb_c.so" || fail 'bundled libfdb_c.so not loaded'
             "$stage/swarmy-core" api --version
+            "$stage/swarmy-node" --version
+            "$stage/swarmy-provisioner" --version
         fi
     fi
     if [ "$component" = image ]; then

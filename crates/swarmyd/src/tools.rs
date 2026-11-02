@@ -1,3 +1,7 @@
+use crate::{
+    heads::Heads,
+    keeper::{self, Answered, ClaimHold, Keeper},
+};
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use std::{
@@ -9,42 +13,37 @@ use swarmy_core::{
     LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, ProcessListArguments, Sandbox,
     SandboxArguments, ToolJob, ToolResult, VolumeId,
 };
+use swarmy_node_protocol::{
+    ClientError, FenceKind, NodeClient, NodeRefusal, ToolClaimRequest, ToolCompleteRequest,
+};
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
-use swarmy_store::{Store, StoreError};
 use tokio::sync::mpsc;
+const NODE_TOOL_BATCH: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(16).expect("16 is not zero");
 
-const LEASE: Duration = Duration::from_secs(30);
 /// Extra time for sandbox exec startup (cold image reads) and helper startup, not the command.
 const EXEC_STARTUP_ALLOWANCE_MS: u64 = 60_000;
 
 pub(crate) fn spawn(
     bus: Bus,
-    store: &Store,
     node: NodeId,
     hosting: &Arc<crate::hosting::Hosting>,
     settings: &swarmy_config::Settings,
 ) -> tokio::task::JoinHandle<Result<()>> {
-    tokio::spawn(serve(
-        bus,
-        store.clone(),
-        node,
-        hosting.clone(),
-        settings.bus.ack_wait_ms,
-        settings.scheduler.resend_interval_ms,
-    ))
+    tokio::spawn(serve(bus, node, hosting.clone(), settings.bus.ack_wait_ms))
 }
 
 async fn serve(
     bus: Bus,
-    store: Store,
     node: NodeId,
     hosting: Arc<crate::hosting::Hosting>,
     ack_wait: Duration,
-    resend_interval: Duration,
 ) -> Result<()> {
     let queue = WorkQueue::NodeTools(node);
     bus.setup(std::slice::from_ref(&queue)).await?;
-    let mut messages = bus.consume::<ToolJob>(&queue).await?;
+    let mut messages = bus
+        .consume_batched::<ToolJob>(&queue, NODE_TOOL_BATCH)
+        .await?;
     let mut calls = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
@@ -58,12 +57,8 @@ async fn serve(
                     Some(Ok(message)) => message,
                 };
                 let hosting = hosting.clone();
-                let store = store.clone();
-                let bus = bus.clone();
                 calls.spawn(async move {
-                    let outcome =
-                        handle_call(&message, &store, &hosting, &bus, ack_wait, resend_interval)
-                            .await;
+                    let outcome = handle_call(&message, &hosting, ack_wait).await;
                     settle(&message, outcome).await;
                 });
             }
@@ -76,51 +71,31 @@ async fn serve(
     }
 }
 
-/// Run one tool call without acknowledging it. Every error returns to the
-/// caller, which releases the message for redelivery; only the live nudge
-/// stays best effort because the scheduler recovers it.
+/// Run one tool call without acknowledging it. Every error returns to `settle`,
+/// which releases the message for redelivery.
+fn wall_ns() -> Option<i64> {
+    i64::try_from(jiff::Timestamp::now().as_nanosecond()).ok()
+}
+
+pub(crate) struct CallMetrics {
+    pub(crate) turn: Option<swarmy_core::MessageId>,
+    pub(crate) needs_computer_sample: bool,
+    pub(crate) delivered_ns: Option<i64>,
+    pub(crate) claimed_ns: Option<i64>,
+}
+
 async fn handle_call(
     message: &WorkMessage<ToolJob>,
-    store: &Store,
     hosting: &Arc<crate::hosting::Hosting>,
-    bus: &Bus,
     ack_wait: Duration,
-    resend_interval: Duration,
 ) -> Result<()> {
-    // One lookup per tool call; the turn travels with the job
-    // so the execution path needs no further lookups.
-    let turn = store.request_turn_id(message.value.request_id).await?;
-    let result = message
-        .keep_alive_while(ack_wait / 3, hosting.call(message.value.clone(), turn))
-        .await;
-    result?;
-    // The completion stage lands in the same batch as
-    // the tool result inside `run`; only the live bus
-    // event is emitted here, never a second store write.
-    if let Some(turn) = turn {
-        bus.record_turn(&Bus::turn_event(
-            message.value.session_id,
-            turn,
-            swarmy_core::TurnStage::ToolCompleted,
-            Some(message.value.request_id),
-        ))
-        .await;
-    }
-    if let Some(session) = store.fetch_session(message.value.session_id).await?
-        && session.state == swarmy_core::SessionState::Runnable
-        && let Err(error) = bus
-            .nudge(
-                session.session_id,
-                session.head_seq,
-                turn,
-                resend_interval,
-                false,
-            )
-            .await
-    {
-        tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion nudge failed; scheduler will recover");
-    }
-    Ok(())
+    let delivered_ns = wall_ns();
+    message
+        .keep_alive_while(
+            ack_wait / 3,
+            hosting.call(message.value.clone(), delivered_ns),
+        )
+        .await
 }
 
 /// The only place that acknowledges or releases a tool message. It runs
@@ -152,132 +127,170 @@ async fn release(message: &WorkMessage<ToolJob>) {
     }
 }
 
-pub(crate) fn placement_refusal(
-    current: Option<&PlacementRecord>,
-    dispatched: &PlacementRecord,
-    node: NodeId,
-) -> Option<anyhow::Error> {
-    current
-        .filter(|placement| placement.node_id != node)
-        .or_else(|| (dispatched.node_id != node).then_some(dispatched))
-        .map(|placement| {
-            anyhow::anyhow!(
-                "agent is placed on another node {} at epoch {}",
-                placement.node_id,
-                placement.epoch
-            )
-        })
+/// A tool call claimed through the node API.
+pub(crate) struct Claimed {
+    pub(crate) claim: PlacedToolClaim,
+    pub(crate) hold: ClaimHold,
+    pub(crate) turn: Option<swarmy_core::MessageId>,
+    pub(crate) stamp_ns: Option<i64>,
 }
 
-pub(crate) async fn execute(
-    store: &Store,
-    runtime: Arc<RuncRuntime>,
-    node: NodeId,
+pub(crate) async fn claim(
+    client: &NodeClient,
+    keeper: &Keeper,
     placement: &PlacementRecord,
     job: ToolJob,
-    turn: Option<swarmy_core::MessageId>,
-    needs_computer_sample: bool,
-) -> Result<()> {
-    store.ensure_session_computer(job.session_id).await?;
-    if store.tool_completed(job.request_id).await? {
-        return Ok(());
-    }
-    // claim_placed_tool checks the live placement and dispatch epoch in the
-    // same transaction as the claim; a separate validation could race anyway.
-    let claim = PlacedToolClaim {
+    deadline: tokio::time::Instant,
+) -> Result<Option<Claimed>> {
+    let sent = tokio::time::Instant::now();
+    let request = ToolClaimRequest {
         job,
-        owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
         placement: placement.clone(),
-        expires_at: jiff::Timestamp::now().checked_add(LEASE)?,
+        owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
     };
-    // The transactional claim is the guard. If it rejects a stale placement,
-    // read the current one only to explain the refusal in the node log.
-    let claimed = match store.claim_placed_tool(&claim).await {
-        Ok(claimed) => claimed,
-        Err(error) => {
-            let current = store.get_by_agent(placement.agent_id).await?;
-            if let Some(refusal) = placement_refusal(current.as_ref(), placement, node) {
-                return Err(refusal);
-            }
-            return Err(error.into());
+    match client.claim_tool(&request, deadline).await {
+        Ok(answer) => {
+            let local = keeper::local_deadline(
+                Answered {
+                    sent,
+                    server_now: answer.server_now,
+                },
+                answer.claim.expires_at,
+                keeper::margin(keeper.leases().tool_claim),
+            );
+            let hold = keeper.hold_claim(answer.claim.clone(), local);
+            Ok(Some(Claimed {
+                claim: answer.claim,
+                hold,
+                turn: answer.turn,
+                stamp_ns: wall_ns(),
+            }))
         }
-    };
-    anyhow::ensure!(claimed, "tool call already claimed");
-    let _activity = swarmy_volume::priority::ToolActivity::begin();
-    tokio::select! {
-        result = run(store, runtime, &claim, turn, needs_computer_sample) => result,
-        result = heartbeat(store, &claim) => result,
+        Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => Ok(None),
+        Err(ClientError::Refused(refusal)) => Err(claim_refusal(refusal)),
+        Err(error) => Err(error.into()),
     }
 }
 
-async fn run(
-    store: &Store,
-    runtime: Arc<RuncRuntime>,
+fn claim_refusal(refusal: NodeRefusal) -> anyhow::Error {
+    match refusal {
+        NodeRefusal::PlacedElsewhere { .. } | NodeRefusal::EpochStopped { .. } => {
+            crate::hosting::refusal_error(refusal)
+        }
+        NodeRefusal::Fenced(FenceKind::PlacedToolClaim) => {
+            anyhow::anyhow!("tool call already claimed")
+        }
+        NodeRefusal::Fenced(FenceKind::DispatchPlacementStale { detail })
+        | NodeRefusal::Unavailable(detail) => anyhow::anyhow!(detail),
+        other => anyhow::anyhow!("node API refused the tool claim: {other}"),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Completion {
+    Committed { interrupt_requested: bool },
+    AlreadyDone,
+}
+
+pub(crate) async fn complete(
+    client: &NodeClient,
     claim: &PlacedToolClaim,
-    turn: Option<swarmy_core::MessageId>,
-    needs_computer_sample: bool,
+    hold: &ClaimHold,
+    result: ToolResult,
+    tool: swarmy_core::ToolMetric,
+) -> Result<Completion> {
+    let deadline = hold
+        .deadline()
+        .context("tool claim lost before completion")?;
+    match client
+        .complete_tool(
+            &ToolCompleteRequest {
+                claim: claim.clone(),
+                result,
+                tool,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(answer) => Ok(Completion::Committed {
+            interrupt_requested: answer.interrupt_requested,
+        }),
+        Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => Ok(Completion::AlreadyDone),
+        Err(ClientError::Refused(refusal)) => Err(anyhow::anyhow!(
+            "node API refused the tool completion: {refusal}"
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) async fn run(
+    client: &NodeClient,
+    keeper: &Keeper,
+    runtime: Arc<RuncRuntime>,
+    heads: &Heads,
+    claimed: Claimed,
+    metrics: CallMetrics,
 ) -> Result<()> {
+    let _activity = swarmy_volume::priority::ToolActivity::begin();
+    let Claimed {
+        claim, mut hold, ..
+    } = claimed;
+    let sandbox = Sandbox {
+        agent_id: claim.placement.agent_id,
+    };
+    let (result, timing) = tokio::select! {
+        produced = produce(&runtime, heads, &claim) => produced?,
+        reason = hold.lost() => anyhow::bail!("tool claim lost before the command finished: {reason}"),
+    };
+    let tool = node_tool_metric(&claim, &metrics, &result, &timing);
+    let outcome = complete(client, &claim, &hold, result.clone(), tool).await?;
+    if matches!(
+        outcome,
+        Completion::Committed {
+            interrupt_requested: true
+        }
+    ) {
+        stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
+    }
+    drop(hold);
+    if matches!(outcome, Completion::Committed { .. }) {
+        observe_first_tool(keeper, runtime, &claim, &metrics);
+        tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
+    } else {
+        tracing::info!(request_id = %claim.job.request_id, "tool completion already committed by an earlier attempt");
+    }
+    Ok(())
+}
+
+async fn produce(
+    runtime: &Arc<RuncRuntime>,
+    heads: &Heads,
+    claim: &PlacedToolClaim,
+) -> Result<(ToolResult, ToolTiming)> {
     tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
     let sandbox = Sandbox {
         agent_id: claim.placement.agent_id,
     };
-    require_display(store, claim).await?;
-    let outcome = run_command(store, &runtime, &sandbox, claim).await?;
+    let outcome = run_command(heads, runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
-    extract_image_blob(store, &mut result).await?;
-    cap_completed_output(&runtime, &sandbox, claim, &mut result).await;
-    if store.interrupt_requested(claim.job.session_id).await? {
-        stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
-    }
-    commit_result(store, claim, &result).await?;
-    // The tool result and completion stage land right after the fenced
-    // commit so the worker sees the completion without waiting for the
-    // volume stat round trip. The first-tool computer re-sample follows in
-    // its own transaction from a spawned task; the store keeps the first
-    // re-sample per turn. Queueing versus execution stays distinguishable
-    // through `started_ns` and `process_wall_ms`. The output cap above
-    // applies before the metrics patch so the recorded size matches what
-    // the worker stored.
-    observe_tool_completion(
-        store,
-        runtime,
-        claim,
-        turn,
-        needs_computer_sample,
-        &result,
-        &outcome.summary,
-    );
-    tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
-    Ok(())
-}
-
-/// Reject display tools when the agent's image has no display. Display
-/// support varies only by image manifest, so this check runs before the
-/// sandbox starts.
-async fn require_display(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
-    if !claim.job.arguments.is_display_tool() {
-        return Ok(());
-    }
-    let agent = store
-        .get_agent(claim.placement.agent_id)
-        .await?
-        .context("agent missing")?;
-    anyhow::ensure!(
-        store.image_display(&agent.image).await?,
-        "display tool requires a display image"
-    );
-    Ok(())
+    extract_image_blob(runtime.objects(), &mut result).await?;
+    cap_completed_output(runtime, &sandbox, claim, &mut result).await;
+    Ok((result, outcome.summary))
 }
 
 /// Move an inline base64 screenshot out of the result metadata into blob
 /// storage, replacing it with the object key the worker downloads.
-async fn extract_image_blob(store: &Store, result: &mut ToolResult) -> Result<()> {
+async fn extract_image_blob(
+    objects: &dyn object_store::ObjectStore,
+    result: &mut ToolResult,
+) -> Result<()> {
     if let ToolResult::Completed { metadata, .. } = result {
         metadata.remove("image_object_key");
         if let Some(encoded) = metadata.remove("image_base64") {
             let encoded = encoded.as_str().context("image payload must be base64")?;
             let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-            let key = store.put_tool_blob(bytes).await?;
+            let key = swarmy_volume::put_tool_blob(objects, bytes).await?;
             metadata.insert("image_object_key".into(), serde_json::json!(key));
         }
     }
@@ -305,22 +318,6 @@ async fn cap_completed_output(
     }
 }
 
-async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResult) -> Result<()> {
-    // A single call usually remains at its request head. Concurrent calls and
-    // rebuild notices return the actual head from the same fenced transaction.
-    let mut head = claim.job.step;
-    loop {
-        match store.complete_placed_tool(claim, head, result).await {
-            Ok(()) => break,
-            Err(StoreError::Fence(swarmy_store::FenceError::StaleSequence { actual, .. })) => {
-                head = actual;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
 /// Wall-clock start and process timing for one sandbox execution.
 struct ToolTiming {
     exit_status: Option<i32>,
@@ -334,7 +331,7 @@ struct CommandOutcome {
 }
 
 async fn run_command(
-    store: &Store,
+    heads: &Heads,
     runtime: &RuncRuntime,
     sandbox: &Sandbox,
     claim: &PlacedToolClaim,
@@ -357,8 +354,7 @@ async fn run_command(
     let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
     // The start time travels in memory to the completion batch below;
     // no separate start transaction is written.
-    let started_wall = jiff::Timestamp::now();
-    let started_ns = i64::try_from(started_wall.as_nanosecond()).ok();
+    let started_ns = wall_ns();
     let started = Instant::now();
     let process_id = match arguments {
         SandboxArguments::Bash(_)
@@ -403,13 +399,11 @@ async fn run_command(
         if arguments.is_display_tool() {
             display_result(arguments.name(), value)?
         } else if matches!(arguments, SandboxArguments::Bash(_)) {
-            value["manifest_id"] = serde_json::json!(
-                store
-                    .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
-                    .await?
-                    .context("agent volume missing")?
-                    .head_manifest
-            );
+            let volume = VolumeId::from_ulid(sandbox.agent_id.as_ulid());
+            let head = heads
+                .get(volume)
+                .context("no published head for the agent volume on this node")?;
+            value["manifest_id"] = serde_json::json!(head);
             let metadata = serde_json::from_value(value.clone())?;
             ToolResult::Completed {
                 title: "bash".into(),
@@ -423,20 +417,12 @@ async fn run_command(
     Ok(CommandOutcome { result, summary })
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
-)]
-fn observe_tool_completion(
-    store: &Store,
-    runtime: Arc<RuncRuntime>,
+fn node_tool_metric(
     claim: &PlacedToolClaim,
-    turn: Option<swarmy_core::MessageId>,
-    needs_computer_sample: bool,
+    metrics: &CallMetrics,
     result: &ToolResult,
     timing: &ToolTiming,
-) {
-    let Some(turn) = turn else { return };
+) -> swarmy_core::ToolMetric {
     let (output_bytes, exit_status) = match result {
         ToolResult::Completed {
             output, metadata, ..
@@ -450,42 +436,44 @@ fn observe_tool_completion(
         ),
         ToolResult::Error { error } => (error.len() as u64, timing.exit_status),
     };
-    let tool = swarmy_store::ToolMetric {
+    swarmy_core::ToolMetric {
         request_id: claim.job.request_id.to_string(),
         name: claim.job.arguments.name().into(),
         started_ns: timing.started_ns,
+        delivered_ns: metrics.delivered_ns,
+        claimed_ns: metrics.claimed_ns,
         exit_status,
         output_bytes: Some(output_bytes),
         process_wall_ms: timing.process_wall_ms,
         ..Default::default()
-    };
-    let completed = Bus::turn_event(
-        claim.job.session_id,
-        turn,
-        swarmy_core::TurnStage::ToolCompleted,
-        Some(claim.job.request_id),
-    );
-    // The result lands before the volume stat round trip so `run` returns
-    // without waiting on the attach server socket.
-    store.observe_turn_metrics(
-        claim.job.session_id,
-        turn,
-        swarmy_store::completion_patches(tool, None, completed),
-    );
-    // Lazy hydration during the first command is invisible in the boot
-    // sample, so re-sample after the result is committed. Only the first
-    // completion per turn carries it; the store keeps the first re-sample
-    // per turn as well.
-    if needs_computer_sample {
-        let store = store.clone();
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
+)]
+fn observe_first_tool(
+    keeper: &Keeper,
+    runtime: Arc<RuncRuntime>,
+    claim: &PlacedToolClaim,
+    metrics: &CallMetrics,
+) {
+    if metrics.needs_computer_sample
+        && let Some(turn) = metrics.turn
+    {
+        let keeper = keeper.clone();
         let session = claim.job.session_id;
         let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
         tokio::spawn(async move {
             if let Ok(stats) = runtime.volume_stats(volume).await {
-                store.observe_turn_metric(
+                let (prefetch_bytes, prefetch_ms) = prefetch_fields(&stats);
+                keeper.queue_metric(
                     session,
                     turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
+                    swarmy_node_protocol::NodeMetric::Computer(swarmy_core::ComputerMetric {
+                        prefetch_bytes,
+                        prefetch_ms,
                         first_tool_chunks_fetched: Some(stats.fetched_chunks),
                         first_tool_bytes_fetched: Some(stats.fetched_bytes),
                         first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
@@ -496,6 +484,16 @@ fn observe_tool_completion(
             }
         });
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "prefetch timing is an approximate metric, so floating-point display precision is sufficient"
+)]
+fn prefetch_fields(stats: &swarmy_volume::DeviceStats) -> (Option<u64>, Option<f64>) {
+    let bytes = (stats.boot_prefetch_chunks > 0 || stats.boot_prefetch_ms.is_some())
+        .then_some(stats.boot_prefetch_bytes);
+    (bytes, stats.boot_prefetch_ms.map(|ms| ms as f64))
 }
 
 async fn stop_result_process(
@@ -735,376 +733,12 @@ pub(crate) async fn has_processes(
     Ok(records.iter().any(|record| record["status"] == "running"))
 }
 
-async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
-    let mut expiry = claim.expires_at;
-    loop {
-        tokio::time::sleep(LEASE / 3).await;
-        let next = jiff::Timestamp::now().checked_add(LEASE)?;
-        let remaining = expiry
-            .duration_since(jiff::Timestamp::now())
-            .try_into()
-            .unwrap_or(Duration::ZERO);
-        tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
-        expiry = next;
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    #![deny(clippy::disallowed_methods)]
-    use super::{exec_guard, helper_timeout_error, placement_refusal};
-    use swarmy_core::{
-        AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
-    };
-
-    #[test]
-    fn bash_guard_reserves_startup_after_default_yield() {
-        let args = swarmy_core::SandboxArguments::Bash(swarmy_core::BashArguments {
-            command: "true".into(),
-            timeout_ms: 120_000,
-            yield_seconds: 10,
-            output_budget_bytes: 32_768,
-        });
-        assert_eq!(exec_guard(&args), std::time::Duration::from_secs(70));
-    }
-
-    #[test]
-    fn timed_out_helper_names_its_process() {
-        let error = helper_timeout_error("bash", 70, Some("process-123"), "partial", "warning");
-        assert!(error.contains("process process-123; use process_log or process_list"));
-        assert!(error.contains("within 70 s"));
-        assert!(error.contains("stdout: partial stderr: warning"));
-    }
-
-    #[test]
-    fn rejected_claim_explains_other_nodes_placement() {
-        let node = NodeId::from_ulid(ulid::Ulid::generate());
-        let other = NodeId::from_ulid(ulid::Ulid::generate());
-        let now = jiff::Timestamp::now();
-        let dispatched = PlacementRecord {
-            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
-            node_id: other,
-            epoch: 2,
-            expires_at: now,
-            last_change_reason: PlacementChangeReason::Initial,
-            last_changed_at: now,
-        };
-        let explanation = format!("agent is placed on another node {other} at epoch 2");
-        // The takeover test dispatches the replacement placement to the old node.
-        assert_eq!(
-            placement_refusal(Some(&dispatched), &dispatched, node)
-                .unwrap()
-                .to_string(),
-            explanation
-        );
-        assert_eq!(
-            placement_refusal(None, &dispatched, node)
-                .unwrap()
-                .to_string(),
-            explanation
-        );
-        let local = PlacementRecord {
-            node_id: node,
-            ..dispatched
-        };
-        assert_eq!(
-            placement_refusal(Some(&dispatched), &local, node)
-                .unwrap()
-                .to_string(),
-            explanation
-        );
-        assert!(placement_refusal(Some(&local), &local, node).is_none());
-    }
-
-    struct Processes(tempfile::TempDir);
-
-    impl Processes {
-        fn call(&self, action: &str, id: &str, command: &str, epoch: u64) -> serde_json::Value {
-            self.call_with_options(action, id, command, epoch, None)
-        }
-
-        fn call_with_options(
-            &self,
-            action: &str,
-            id: &str,
-            command: &str,
-            epoch: u64,
-            options: Option<serde_json::Value>,
-        ) -> serde_json::Value {
-            let script = include_str!("processes.py").replace(
-                "Path('/var/lib/swarmy/processes')",
-                &format!("Path({})", serde_json::json!(self.0.path())),
-            );
-            let mut args = vec![
-                "-c".to_owned(),
-                script,
-                action.to_owned(),
-                epoch.to_string(),
-                id.to_owned(),
-                command.to_owned(),
-            ];
-            if let Some(options) = options {
-                args.push(options.to_string());
-            }
-            let output = std::process::Command::new("python3")
-                .args(&args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            serde_json::from_slice(&output.stdout).unwrap()
-        }
-
-        fn list(&self, options: serde_json::Value, epoch: u64) -> Vec<serde_json::Value> {
-            let value = self.call_with_options("process_list", "", "", epoch, Some(options));
-            value.as_array().cloned().unwrap_or_default()
-        }
-
-        async fn start_exited(&self, command: &str, epoch: u64) -> String {
-            let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
-            self.call("process_start", &id, command, epoch);
-            let exit = self.0.path().join(&id).join("exit.json");
-            swarmy_testkit::eventually(
-                "process did not exit",
-                std::time::Duration::from_secs(5),
-                async || exit.exists().then_some(()),
-            )
-            .await;
-            id
-        }
-    }
-
-    impl Drop for Processes {
-        fn drop(&mut self) {
-            for entry in std::fs::read_dir(self.0.path()).unwrap().flatten() {
-                if let Ok(bytes) = std::fs::read(entry.path().join("record.json")) {
-                    let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                    ignore_best_effort(
-                        std::process::Command::new("kill")
-                            .args(["-KILL", "--", &format!("-{}", record["pid"])])
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status(),
-                        "kill stale sandbox process",
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn process_records_outlive_the_launching_exec_and_reject_stale_pids() {
-        let processes = Processes(tempfile::tempdir().unwrap());
-        let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
-        processes.call("process_start", &id, "echo ready; sleep 300", 1);
-        let listed = processes.call("process_list", "", "", 1);
-        assert_eq!(listed[0]["status"], "running");
-        let restarted = processes.call("process_list", "", "", 2);
-        assert_eq!(restarted[0]["status"], "restarted");
-        let path = processes.0.path().join(&id).join("record.json");
-        let mut record: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let ticks = record["start_ticks"].clone();
-        record["start_ticks"] = serde_json::json!("impossible start time");
-        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
-        assert_eq!(
-            processes.call("process_list", "", "", 1)[0]["status"],
-            "exited"
-        );
-        processes.call("process_stop", &id, "", 1);
-        record["start_ticks"] = ticks;
-        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
-        assert_eq!(
-            processes.call("process_list", "", "", 1)[0]["status"],
-            "running"
-        );
-        processes.call("process_stop", &id, "", 1);
-        assert_eq!(
-            processes.call("process_list", "", "", 1)[0]["status"],
-            "exited"
-        );
-    }
-
-    async fn seed_exited(processes: &Processes, count: usize, epoch: u64) -> Vec<String> {
-        let mut ids = Vec::with_capacity(count);
-        for index in 0..count {
-            ids.push(
-                processes
-                    .start_exited(&format!("true # {index}"), epoch)
-                    .await,
-            );
-        }
-        ids
-    }
-
-    fn assert_newest_first(records: &[serde_json::Value]) {
-        // Running records lead; within each group the order is newest first.
-        let mut seen_exited = false;
-        for window in records.windows(2) {
-            let running = window[0]["status"] == "running";
-            assert!(
-                !(running && seen_exited),
-                "running process listed after an exited one"
-            );
-            seen_exited |= !running;
-            if window[0]["status"] == window[1]["status"] {
-                let first = window[0]["started_at"].as_f64().unwrap_or_default();
-                let second = window[1]["started_at"].as_f64().unwrap_or_default();
-                assert!(first >= second, "process list is not newest first");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn process_list_is_bounded_newest_first_with_overrides() {
-        let processes = Processes(tempfile::tempdir().unwrap());
-        let exited = seed_exited(&processes, 30, 1).await;
-        let running = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
-        processes.call("process_start", &running, "sleep 300", 1);
-        let default = processes.list(serde_json::json!({}), 1);
-        assert_eq!(default.len(), 21);
-        assert_newest_first(&default);
-        assert!(default.iter().any(|item| item["process_id"] == running));
-        assert_eq!(default[0]["process_id"], running);
-        let newest_exited: Vec<&String> = exited.iter().rev().take(20).collect();
-        for id in &newest_exited {
-            assert!(default.iter().any(|item| item["process_id"] == **id));
-        }
-        let oldest = &exited[0];
-        assert!(!default.iter().any(|item| item["process_id"] == *oldest));
-        let limited = processes.list(serde_json::json!({"limit": 5}), 1);
-        assert_eq!(limited.len(), 6);
-        assert_newest_first(&limited);
-        let all = processes.list(serde_json::json!({"all": true}), 1);
-        assert_eq!(all.len(), 31);
-        assert_newest_first(&all);
-    }
-
-    #[test]
-    fn process_list_truncates_long_commands() {
-        let processes = Processes(tempfile::tempdir().unwrap());
-        let long = "x".repeat(2000);
-        let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
-        processes.call("process_start", &id, &long, 1);
-        let listed = processes.list(serde_json::json!({"all": true}), 1);
-        let record = listed
-            .iter()
-            .find(|item| item["process_id"] == id)
-            .expect("long command missing");
-        let command = record["command"].as_str().unwrap_or_default();
-        assert_eq!(command.len(), 512);
-        assert!(command.ends_with("..."));
-    }
-
-    #[tokio::test]
-    async fn failed_call_is_released_for_redelivery() {
-        let Some(stack) = swarmy_testkit::Stack::load("toolserver") else {
-            return;
-        };
-        let mut guard = swarmy_testkit::StackGuard::new(&stack);
-        let bus = swarmy_bus::Bus::connect(
-            &stack.nats_url,
-            swarmy_bus::Config {
-                prefix: Some(swarmy_bus::SubjectToken::new(&stack.prefix).unwrap()),
-                ..swarmy_bus::Config::default()
-            },
-        )
-        .await
-        .unwrap();
-        let node = NodeId::from_ulid(ulid::Ulid::generate());
-        let queue = swarmy_bus::WorkQueue::NodeTools(node);
-        bus.setup(std::slice::from_ref(&queue)).await.unwrap();
-        let session = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
-        let job = swarmy_core::ToolJob {
-            session_id: session,
-            request_id: swarmy_core::RequestId::for_step(session, 1),
-            call_id: swarmy_core::ToolCallId("bash".into()),
-            step: 1,
-            arguments: swarmy_core::SandboxArguments::Bash(swarmy_core::BashArguments {
-                command: "true".into(),
-                timeout_ms: 120_000,
-                yield_seconds: 10,
-                output_budget_bytes: 32_768,
-            }),
-        };
-        bus.publish_work(&queue, &job).await.unwrap();
-        let mut messages = bus.consume::<swarmy_core::ToolJob>(&queue).await.unwrap();
-        let first = tokio::time::timeout(std::time::Duration::from_secs(10), messages.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(first.value.request_id, job.request_id);
-        super::settle(&first, Err(anyhow::anyhow!("injected store failure"))).await;
-        let second = tokio::time::timeout(std::time::Duration::from_secs(10), messages.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(second.value.request_id, job.request_id);
-        super::settle(&second, Ok(())).await;
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(3), messages.next())
-                .await
-                .is_err()
-        );
-        guard.cleanup().await;
-    }
-}
-
+#[path = "tools_api_tests.rs"]
+mod api_tests;
 #[cfg(test)]
-mod display_tests {
-    #![deny(clippy::disallowed_methods)]
-    use super::display_result;
-    use swarmy_core::ToolResult;
-
-    #[tokio::test]
-    async fn sandbox_supplied_image_key_is_removed() {
-        let Some(stack) = swarmy_testkit::Stack::load("node-image-key") else {
-            return;
-        };
-        let (store, _guard) = stack
-            .open_store(std::sync::Arc::new(
-                swarmy_store::blob::MemoryBlobStore::default(),
-            ))
-            .await;
-        let mut result = ToolResult::Completed {
-            output: String::new(),
-            title: String::new(),
-            metadata: std::collections::BTreeMap::from([(
-                "image_object_key".into(),
-                serde_json::json!("blobs/untrusted"),
-            )]),
-        };
-        super::extract_image_blob(&store, &mut result)
-            .await
-            .unwrap();
-        let ToolResult::Completed { metadata, .. } = result else {
-            panic!("completed result changed")
-        };
-        assert!(!metadata.contains_key("image_object_key"));
-    }
-
-    #[test]
-    fn screenshot_payload_becomes_image_metadata() {
-        let result = display_result(
-            "browser_screenshot",
-            serde_json::json!({
-                "output": "PNG screenshot", "image_base64": "iVBORw0KGgo="
-            }),
-        )
-        .unwrap();
-        let ToolResult::Completed {
-            output, metadata, ..
-        } = result
-        else {
-            panic!("expected screenshot result");
-        };
-        assert_eq!(output, "PNG screenshot");
-        assert_eq!(metadata["image_media_type"], "image/png");
-        assert_eq!(metadata["image_base64"], "iVBORw0KGgo=");
-    }
-}
+#[path = "tools_display_tests.rs"]
+mod display_tests;
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tests;

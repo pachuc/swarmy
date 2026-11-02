@@ -3,7 +3,7 @@
 #   make install         install the client plus swarmy-core into ~/.cargo/bin
 #   make install-client  install the chat client, provisioning, and auth helper (needs no libfdb_c)
 #   make install-core    install swarmy-core, every service role (needs libfdb_c)
-#   make install-node    install headless client plus swarmy-core; its node role requires root
+#   make install-node    install headless client plus swarmy-node; the node requires root
 #   make dev-tools       install FoundationDB, NATS, and SeaweedFS under ~/.local
 #   make models          regenerate the provider and model catalog
 #   make check           every pull-request CI job below, in CI order (start the dev stack first)
@@ -72,7 +72,8 @@ install-core: fdb-check
 
 install: install-client install-core
 
-install-node: install-core
+install-node:
+	@$(CARGO) install --locked --path "crates/swarmyd" --bin swarmy-node
 	@$(CARGO) install --locked --no-default-features --path "crates/swarmy-cli"
 
 dev-tools:
@@ -102,6 +103,7 @@ check-lint:
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
 
 check-deps:
+	scripts/check-node-deps.sh
 	$(CARGO) deny check licenses bans sources
 	$(CARGO) machete --with-metadata
 
@@ -150,7 +152,7 @@ check:
 	$(MAKE) check-scripts
 
 uninstall:
-	@for bin in swarmy swarmy-auth swarmy-core; do \
+	@for bin in swarmy swarmy-auth swarmy-core swarmy-node; do \
 		if [ -e "$(HOME)/.cargo/bin/$$bin" ]; then rm -v "$(HOME)/.cargo/bin/$$bin"; fi; \
 	done
 

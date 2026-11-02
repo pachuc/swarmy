@@ -139,6 +139,8 @@ pub fn fake_release(tag: &str, target: &str, core_script: &str) -> Vec<(String, 
         &core_name,
         &[
             ("swarmy-core", core_script.as_bytes()),
+            ("swarmy-provisioner", core_script.as_bytes()),
+            ("swarmy-node", core_script.as_bytes()),
             ("libfdb_c.so", b"dummy"),
         ],
     );

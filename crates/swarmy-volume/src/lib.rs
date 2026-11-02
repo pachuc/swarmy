@@ -1,8 +1,17 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
+mod bootset;
+pub use bootset::{get_boot_set, put_boot_set};
 mod device;
-pub mod gc;
+mod metadata;
+pub use metadata::{
+    LeaseStatus, MetadataError, RenewalTask, VolumeMetadata, WriterGrant, WriterLease,
+};
+mod blobs;
+pub mod objects;
+pub use blobs::put_tool_blob;
 mod metrics;
 pub mod priority;
+mod reuse;
 pub use metrics::UploadStats;
 mod snapshot;
 pub use snapshot::SnapshotLoop;
@@ -26,8 +35,8 @@ pub use manifest::{BLOCKS_PER_LEAF, Manifest, ManifestBuilder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VolumeError {
-    #[error("durable volume metadata: {0}")]
-    Store(#[from] swarmy_store::StoreError),
+    #[error(transparent)]
+    Metadata(#[from] MetadataError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("request is unaligned, too large, or outside the disk")]
@@ -44,8 +53,6 @@ pub enum VolumeError {
     InvalidBlock(u64),
     #[error("stored content does not match its hash or manifest shape")]
     Corrupt,
-    #[error("invalid garbage collection policy or reference allocation failed")]
-    InvalidGcPolicy,
     #[error("nonzero content hashed to the reserved zero sentinel")]
     ReservedHash,
 }
@@ -55,7 +62,8 @@ pub type Result<T> = std::result::Result<T, VolumeError>;
 #[derive(Clone)]
 pub struct ChunkStore {
     inner: Arc<dyn ObjectStore>,
-    metadata: Arc<OnceLock<swarmy_store::Store>>,
+    metadata: Arc<OnceLock<Arc<dyn VolumeMetadata>>>,
+    reuse: Arc<reuse::ReuseBatcher>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,22 +78,24 @@ impl ChunkStore {
         Self {
             inner,
             metadata: Arc::new(OnceLock::new()),
+            reuse: Arc::default(),
         }
     }
 
     /// Bind uploads to the metadata namespace whose collector owns this bucket.
     #[must_use]
-    pub fn with_gc_protection(inner: Arc<dyn ObjectStore>, metadata: swarmy_store::Store) -> Self {
+    pub fn with_gc_protection(
+        inner: Arc<dyn ObjectStore>,
+        metadata: Arc<dyn VolumeMetadata>,
+    ) -> Self {
         let chunks = Self::new(inner);
         chunks.protect_uploads(metadata);
         chunks
     }
 
-    pub(crate) fn protect_uploads(&self, metadata: swarmy_store::Store) {
+    pub(crate) fn protect_uploads(&self, metadata: Arc<dyn VolumeMetadata>) {
         // An attachment binds once, before its uploader starts. Clones share
-        // the first store; a repeat bind drops the newcomer. `Store` has no
-        // `Debug` impl, so this names the benign outcome instead of routing
-        // through the best-effort helper.
+        // the first store; a repeat bind drops the newcomer. a repeated bind keeps the initial metadata client.
         if self.metadata.set(metadata).is_err() {
             tracing::debug!("volume metadata already bound; keeping the first store");
         }
@@ -93,19 +103,10 @@ impl ChunkStore {
 
     async fn protect_reuse(&self, hash: ContentHash) -> Result<()> {
         if let Some(metadata) = self.metadata.get() {
-            loop {
-                match metadata.protect_reused_chunk(hash).await {
-                    Err(swarmy_store::StoreError::Fence(
-                        swarmy_store::FenceError::GcLeaseMismatch,
-                    )) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                    result => {
-                        result?;
-                        break;
-                    }
-                }
-            }
+            let protect = |hashes: Vec<ContentHash>| async move {
+                Ok(metadata.protect_reused_chunks(&hashes).await?)
+            };
+            self.reuse.protect(hash, &protect).await?;
         }
         Ok(())
     }
@@ -159,7 +160,9 @@ impl ChunkStore {
     }
 }
 
-fn chunk_path(hash: ContentHash) -> Path {
+/// Object path of a chunk; the collector sweeps only these.
+#[must_use]
+pub fn chunk_path(hash: ContentHash) -> Path {
     let hex = hash.to_string();
     Path::from(format!("chunks/{}/{hex}", &hex[..2]))
 }

@@ -33,7 +33,6 @@ swarmy-core.workspace = true
 # The fake provider is the default development provider; e2e, chaos and remote acceptance run the real binary against it.
 swarmy-llm = { workspace = true, features = ["fake"] }
 swarmy-harness.workspace = true
-blake3.workspace = true
 swarmy-store.workspace = true
 tokio.workspace = true
 tracing.workspace = true

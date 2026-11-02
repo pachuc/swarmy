@@ -36,6 +36,28 @@ impl Snapshot {
         &self.messages
     }
 
+    /// Calls in the current tool batch that have not been requested on a node.
+    /// An interrupted capacity wait must fail these before ending its turn.
+    #[must_use]
+    pub fn unrequested_tool_calls(&self) -> Vec<ToolCallRecord> {
+        let Phase::Tools {
+            expected,
+            requested,
+        } = &self.phase
+        else {
+            return Vec::new();
+        };
+        expected
+            .iter()
+            .filter(|call| {
+                !requested
+                    .iter()
+                    .any(|item| item.call.call_id == call.call_id)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Discard an unusable checkpoint reply while preserving the durable log.
     #[must_use]
     pub fn without_message(mut self, id: swarmy_core::MessageId) -> Self {

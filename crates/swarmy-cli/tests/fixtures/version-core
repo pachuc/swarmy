@@ -7,5 +7,6 @@ case "$1" in
   worker) echo 'worker ready';;
   gateway) echo 'gateway ready';;
   api) echo 'api ready';;
+  node-api) echo 'node-api ready';;
 esac
 exec /bin/sleep 600
