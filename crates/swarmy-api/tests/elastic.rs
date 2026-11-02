@@ -55,6 +55,7 @@ fn group_body(key: &str) -> PutElasticGroup {
         external_bucket: true,
         network_id: "4711".into(),
         image: Some("ubuntu-24.04".into()),
+        node_memory_mib: None,
     }
 }
 
@@ -319,6 +320,75 @@ async fn put_rejects_bad_primary_address_and_service_user(client: &reqwest::Clie
     .await;
 }
 
+async fn register_autoscale_with_size(client: &reqwest::Client, base: &str) -> ElasticGroup {
+    let mut body = group_body("autoscale-first");
+    let mut missing = group_body("autoscale-missing");
+    missing.autoscale = true;
+    let first = format!("{base}/gpu");
+    let rejected = client
+        .put(&first)
+        .bearer_auth("test-token")
+        .json(&missing)
+        .send()
+        .await
+        .unwrap();
+    let failure = assert_api_error(rejected, 400, "invalid_elastic_group").await;
+    assert!(failure.to_string().contains("node_memory_mib"));
+    assert_eq!(
+        client
+            .get(&first)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    body.autoscale = true;
+    body.node_memory_mib = Some(12288);
+    assert!(
+        client
+            .put(&first)
+            .bearer_auth("test-token")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    let mut update = group_body("autoscale-update");
+    update.autoscale = true;
+    let response = client
+        .put(&first)
+        .bearer_auth("test-token")
+        .json(&update)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(
+        response
+            .json::<ElasticGroup>()
+            .await
+            .unwrap()
+            .node_memory_mib,
+        Some(12288)
+    );
+    let registered: ElasticGroup = client
+        .get(&first)
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(registered.node_memory_mib, Some(12288));
+    assert!(registered.autoscale);
+    registered
+}
+
 #[tokio::test]
 async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
     let Some(stack) = swarmy_testkit::Stack::load("api-elastic-autoscale") else {
@@ -339,31 +409,12 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
     let base = format!("http://{}/v1/swarm/groups", listener.local_addr().unwrap());
     let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
     let client = reqwest::Client::new();
-    let mut body = group_body("autoscale-first");
-    body.autoscale = true;
-    let first = format!("{base}/gpu");
-    assert!(
-        client
-            .put(&first)
-            .bearer_auth("test-token")
-            .json(&body)
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success()
-    );
-    let registered: ElasticGroup = client
-        .get(&first)
-        .bearer_auth("test-token")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let registered = register_autoscale_with_size(&client, &base).await;
     assert!(registered.autoscale);
-    body.idempotency_key = "autoscale-second".into();
+    let mut body = group_body("autoscale-second");
+    body.autoscale = true;
+    body.node_memory_mib = Some(12288);
+    let first = format!("{base}/gpu");
     assert_api_error(
         client
             .put(format!("{base}/gpu2"))

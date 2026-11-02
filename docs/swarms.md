@@ -472,7 +472,7 @@ failing their calls. The scheduler retries every 30 seconds and sessions
 continue on their own when capacity appears. After the configured maximum
 session wait (one hour by default), pending calls fail without running.
 
-In a swarm with an autoscaled elastic group, a session waiting for a GPU makes the provisioner add a machine, and parked sessions continue when it joins, usually 5 to 15 minutes later (see [Elastic groups](#elastic-groups)). The provisioner wakes parked sessions when a machine joins.
+In a swarm with an autoscaled elastic group, a session waiting for a GPU makes the provisioner add a machine, and parked sessions continue when it joins, usually 5 to 15 minutes later (see [Elastic groups](#elastic-groups)). The provisioner wakes parked sessions when a machine joins. A computer needing more memory than any live node or autoscaled group offers still waits, with a reason naming its need and the largest suitable machine's offer.
 
 ## Scaling node groups
 
@@ -517,6 +517,7 @@ size = "L4-1-24G"
 location = "fr-par-2"
 elastic = true
 autoscale = true
+node_memory_mib = 12288
 sandboxes = 1
 max = 1
 price_per_hour = "0.75"
@@ -529,6 +530,12 @@ nodes = ["gpu"]
 ```
 
 Autoscale buys machines only for GPU waits, so turn it on only for a group whose size has a GPU.
+`node_memory_mib` is what one machine offers to computers after the 3072 MiB
+system reserve. Read `capacity.memory_bytes` from `swarmy doctor --json` on a
+joined machine and divide by 1048576. `swarmy swarm scale` records the value;
+registering an autoscaled group needs it once. Removing the key from the spec
+does not clear the recorded value. Autoscale buys only for waiting computers
+whose memory fits; larger computers wait with a reason naming the shortfall.
 
 After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the

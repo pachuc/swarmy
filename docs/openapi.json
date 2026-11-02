@@ -3621,6 +3621,15 @@
             "type": "string",
             "description": "Swarm network the group joins; empty means it creates its own."
           },
+          "node_memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Memory one machine offers to computers after its reserve.",
+            "minimum": 0
+          },
           "price_per_hour": {
             "type": "string"
           },
@@ -5043,6 +5052,15 @@
           "network_id": {
             "type": "string",
             "description": "Swarm network the group joins; empty means it creates its own."
+          },
+          "node_memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Memory one machine offers to computers after its reserve.",
+            "minimum": 0
           },
           "price_per_hour": {
             "type": "string"

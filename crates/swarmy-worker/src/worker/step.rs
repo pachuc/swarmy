@@ -482,7 +482,7 @@ impl Worker {
                 request_id,
                 error: format!(
                     "inference wait exceeded: {} ({} attempts)",
-                    wait.reasons().join("; "),
+                    wait.reasons(None).join("; "),
                     wait.inference().map_or(0, |h| h.attempts)
                 ),
                 retryable: false,

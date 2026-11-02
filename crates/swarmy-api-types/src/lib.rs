@@ -933,6 +933,9 @@ pub struct ElasticGroup {
     /// Machine image; absent uses the module default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Memory one machine offers to computers after its reserve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_memory_mib: Option<u64>,
 }
 /// Register or update an elastic group's definition from the swarm spec.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -962,6 +965,9 @@ pub struct PutElasticGroup {
     /// Machine image; absent uses the module default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Memory one machine offers to computers after its reserve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_memory_mib: Option<u64>,
 }
 /// Set the desired number of machines, between zero and max.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

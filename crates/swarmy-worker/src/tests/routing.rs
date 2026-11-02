@@ -1506,6 +1506,44 @@ async fn fill_nodes(f: &Fixture) {
 }
 
 #[tokio::test]
+async fn an_oversized_computer_parks_with_a_memory_shortfall() {
+    use swarmy_core::{AgentSettings, GpuRequirement, Part};
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &AgentSettings {
+                memory_mib: Some(2048),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    let id = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(id, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(id).await;
+    f.step(id).await;
+    let (wait, shortfall) = f.store.session_wait_detail(id).await.unwrap().unwrap();
+    assert_eq!(wait.capacity(), Some(GpuRequirement::None));
+    assert_eq!(
+        shortfall,
+        Some(swarmy_core::Shortfall {
+            needed_mib: 2048,
+            largest_mib: 1024
+        })
+    );
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert!(events.iter().any(|event| matches!(event, Event::MessageAppended { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("MiB of memory"))))));
+}
+
+#[tokio::test]
 async fn full_swarm_parks_for_capacity_then_runs_when_a_node_appears() {
     use swarmy_core::GpuRequirement;
     use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
@@ -1659,7 +1697,7 @@ async fn capacity_wait_past_the_max_fails_the_calls_and_continues() {
     f.step(id).await;
     let events = f.store.read_events(id, 0, 64).await.unwrap();
     let error =
-        swarmy_core::capacity_wait_exceeded(GpuRequirement::None, Duration::from_secs(3600));
+        swarmy_core::capacity_wait_exceeded(GpuRequirement::None, None, Duration::from_secs(3600));
     assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Error { error: actual }, .. } if actual == &error)).count(), 1);
     assert!(f.store.session_wait(id).await.unwrap().is_none());
     assert_eq!(

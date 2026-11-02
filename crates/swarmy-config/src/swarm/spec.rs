@@ -106,6 +106,9 @@ pub struct GroupSpec {
     /// Elastic groups only: the provisioner scales the group for sessions waiting for a GPU.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub autoscale: bool,
+    /// Memory one elastic machine offers to computers after the system reserve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_memory_mib: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -213,12 +216,20 @@ impl GroupSpec {
 }
 fn elastic_failure(swarm: &str, g: &str, group: &GroupSpec) -> Option<String> {
     if !group.elastic {
+        if group.node_memory_mib.is_some() {
+            return Some(format!(
+                "group \"{g}\": node_memory_mib applies only to elastic groups"
+            ));
+        }
         return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some() || group.autoscale)
             .then(|| {
                 format!(
                     "group \"{g}\": max, price_per_hour, currency and autoscale apply only to elastic groups"
                 )
             });
+    }
+    if group.node_memory_mib == Some(0) {
+        return Some(format!("group \"{g}\": node_memory_mib must be at least 1"));
     }
     if matches!(
         group.module,
@@ -369,6 +380,7 @@ impl SwarmSpec {
                     price_per_hour: None,
                     currency: None,
                     autoscale: false,
+                    node_memory_mib: None,
                 },
             )]
             .into(),
@@ -554,6 +566,25 @@ nodes = ["box"]
         assert_eq!(group.machines(), 0);
         assert_eq!(group.hourly_price().unwrap().amount(), "0.75");
         assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        spec.groups.get_mut("workers").unwrap().node_memory_mib = Some(12288);
+        assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        spec.groups.get_mut("workers").unwrap().node_memory_mib = Some(0);
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("node_memory_mib must be at least 1")
+        );
+        spec.groups.get_mut("workers").unwrap().node_memory_mib = None;
+        let mut bad = SwarmSpec::parse(CLOUD).unwrap();
+        bad.groups.get_mut("workers").unwrap().node_memory_mib = Some(12288);
+        assert!(
+            bad.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("node_memory_mib applies only to elastic groups")
+        );
+
         let mut non_elastic = SwarmSpec::parse(CLOUD).unwrap();
         non_elastic.groups.get_mut("workers").unwrap().autoscale = true;
         assert!(

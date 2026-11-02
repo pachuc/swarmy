@@ -72,6 +72,34 @@ impl Store {
         })
         .await
     }
+    /// Record the memory one machine offers after its system reserve.
+    /// # Errors
+    /// Rejects zero and storage failures.
+    pub async fn set_elastic_group_node_memory(&self, group: &str, memory_mib: u64) -> Result<()> {
+        if memory_mib == 0 {
+            return Err(DomainError::InvalidElasticGroup(
+                "node_memory_mib must be at least 1".into(),
+            )
+            .into());
+        }
+        self.transaction(|trx| async move {
+            write(
+                &trx,
+                &self.keys().elastic_group_node_memory(group),
+                &memory_mib,
+            )
+        })
+        .await
+    }
+    /// Read a group's recorded machine memory.
+    /// # Errors
+    /// Storage or decoding failures.
+    pub async fn elastic_group_node_memory(&self, group: &str) -> Result<Option<u64>> {
+        self.transaction(|trx| async move {
+            read(&trx, &self.keys().elastic_group_node_memory(group)).await
+        })
+        .await
+    }
     /// Read a registered group.
     /// # Errors
     /// Returns storage failures.

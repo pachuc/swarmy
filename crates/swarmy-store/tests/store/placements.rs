@@ -1790,6 +1790,7 @@ async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
             id_a,
             &lease_a,
             swarmy_core::GpuRequirement::Shared,
+            None,
             Timestamp::now(),
             Duration::from_hours(1),
         )
@@ -1801,6 +1802,7 @@ async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
             id_b,
             &lease_b,
             swarmy_core::GpuRequirement::None,
+            None,
             Timestamp::now(),
             Duration::from_hours(1),
         )
@@ -1810,6 +1812,14 @@ async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
     assert_eq!(waits.len(), 1);
     assert_eq!(waits[0].session_id, id_a);
     assert_eq!(waits[0].requirement, swarmy_core::GpuRequirement::Shared);
+    assert_eq!(
+        waits[0].memory_mib,
+        test.store
+            .computer_requirements(waits[0].agent_id)
+            .await
+            .unwrap()
+            .memory_mib
+    );
     assert_eq!(waits[0].agent_name.as_deref(), Some("wait-a"));
     assert_eq!(
         waits[0].gpu_request.as_ref().unwrap().reason,

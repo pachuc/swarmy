@@ -231,6 +231,33 @@ class FleetTests(unittest.TestCase):
         exec(compile(FLEET.read_text(), str(FLEET), "exec"), module.__dict__)
         return module
 
+    def test_gpu_launch_creates_workers_that_fit_the_gpu_machine(self):
+        self.config.write_text(self.config.read_text() + "memory_mib = 24576\ngpu_memory_mib = 12288\n")
+        self.assertEqual(self.call("launch", "AAAAA1", "--gpu", "shared").returncode, 0)
+        self.assertEqual(self.call("launch", "AAAAA2").returncode, 0)
+        self.assertEqual([c[c.index("--memory") + 1] for c in self.creates()], ["12288", "24576"])
+        mod = self.driver()
+        self.assertEqual(mod.worker_memory({"memory_mib": 24576, "gpu_memory_mib": 12288}, "none", True), 12288)
+
+    def test_gpu_launch_refuses_an_existing_worker_too_large(self):
+        self.config.write_text(self.config.read_text() + "memory_mib = 24576\ngpu_memory_mib = 12288\n")
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        extra = json.loads(gpu_agent("none", False))
+        extra["requirements"]["memory_mib"] = 24576
+        before = len(self.sets())
+        result = self.call("launch", "AAAAA2", "--gpu", "shared", env=dict(self.env, AGENT_EXTRA=json.dumps(extra)))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fleet reset worker-1", result.stderr)
+        self.assertEqual(len(self.sets()), before)
+
+    def test_gpu_memory_must_be_positive(self):
+        for value in ("0", '"x"', "true"):
+            self.config.write_text(self.config.read_text().split("gpu_memory_mib = ")[0] + f"gpu_memory_mib = {value}\n")
+            result = self.call("launch", "AAAAA1")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("gpu_memory_mib must be a positive whole number of MiB", result.stderr)
+
     def test_launch_gpu_flags_reach_agent_create_and_the_prompt(self):
         result = self.call("launch", "EWR2HD", "--gpu", "shared", "--allow-gpu")
         self.assertEqual(result.returncode, 0, result.stderr)

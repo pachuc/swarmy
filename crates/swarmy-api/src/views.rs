@@ -529,15 +529,15 @@ pub(crate) async fn populate_session_detail(
     record: &swarmy_core::SessionRecord,
     agent: Option<&swarmy_core::AgentRecord>,
 ) -> Result<(), ApiFailure> {
-    if let Some(wait) = state
+    if let Some((wait, shortfall)) = state
         .store
-        .session_wait(record.session_id)
+        .session_wait_detail(record.session_id)
         .await
         .map_err(storage)?
     {
         result.waiting = Some(api::WaitingReason {
             wake_at: Some(wait.wake_at.to_string()),
-            reasons: wait.reasons(),
+            reasons: wait.reasons(shortfall),
         });
     }
     let usage = state
@@ -836,7 +836,10 @@ pub(crate) fn machine_totals(machines: &[api::Machine]) -> Vec<api::MachineCostT
 }
 
 #[must_use]
-pub(crate) fn elastic_group(record: &swarmy_core::ElasticGroupRecord) -> api::ElasticGroup {
+pub(crate) fn elastic_group(
+    record: &swarmy_core::ElasticGroupRecord,
+    node_memory_mib: Option<u64>,
+) -> api::ElasticGroup {
     let definition = &record.definition;
     api::ElasticGroup {
         swarm: definition.swarm.clone(),
@@ -862,6 +865,7 @@ pub(crate) fn elastic_group(record: &swarmy_core::ElasticGroupRecord) -> api::El
         external_bucket: definition.external_bucket,
         network_id: definition.network_id.clone(),
         image: definition.image.clone(),
+        node_memory_mib,
     }
 }
 

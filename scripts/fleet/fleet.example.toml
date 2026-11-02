@@ -8,6 +8,7 @@ effort = "medium"
 workers = 4
 # Sandbox memory requirement for each worker in MiB; cargo builds need this much.
 memory_mib = 6144
+# gpu_memory_mib = 12288  # the GPU group's node_memory_mib; GPU launches cap new workers and refuse larger existing workers
 # stall_minutes = 10  # status exits 2 after a wait or lease exceeds this age
 # kill_timeout_seconds = 60
 # image = "swarmy-dev:dev"  # for new workers; defaults to the swarm's default image

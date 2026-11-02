@@ -2,7 +2,10 @@
 //! Only desired is written here; reconcile applies it with creation and drain limits.
 use jiff::Timestamp;
 use std::time::Duration;
-use swarmy_core::{ElasticGroupRecord, GpuRequirement, MachineCause, MachineState};
+use swarmy_core::{
+    ElasticGroupRecord, GpuRequirement, MachineCause, MachineOffer, MachineState,
+    SandboxRequirements,
+};
 use swarmy_store::{GpuCapacityWait, MachineFilter, Store};
 
 /// Time a joined machine must have no GPU computer before removal.
@@ -161,6 +164,27 @@ fn manual_scale_pending(group: &ElasticGroupRecord) -> bool {
         && group.desired_cause.agent.is_none()
         && !group.desired_cause.reason.starts_with(LOWERED)
 }
+/// Filter waits that cannot fit an empty machine before counting demand.
+pub(crate) fn fitting(
+    node_memory_mib: Option<u64>,
+    waits: &[GpuCapacityWait],
+) -> (Vec<GpuCapacityWait>, usize) {
+    let (fits, unfit): (Vec<_>, Vec<_>) = waits.iter().cloned().partition(|wait| {
+        node_memory_mib.is_none_or(|memory_mib| {
+            swarmy_core::machine_holds(
+                MachineOffer {
+                    memory_mib,
+                    cards: true,
+                },
+                SandboxRequirements {
+                    memory_mib: wait.memory_mib,
+                    gpu: wait.requirement,
+                },
+            )
+        })
+    });
+    (fits, unfit.len())
+}
 /// Read demand and load, then adjust the sole autoscaled group's desired.
 /// # Errors
 /// Store failures.
@@ -176,11 +200,14 @@ pub async fn run(store: &Store) -> anyhow::Result<Option<Decision>> {
     if groups.next().is_some() {
         tracing::warn!("multiple autoscaled groups; using the first");
     }
-    let waits = store.gpu_capacity_waits().await?;
+    let size = store
+        .elastic_group_node_memory(&record.definition.group)
+        .await?;
+    let (waits, unfit) = fitting(size, &store.gpu_capacity_waits().await?);
     let machines = load(store, &record).await?;
     let demand = Demand::from_load(record.definition.sandboxes, &machines, &waits);
     let decision = decide_with_demand(&record, &machines, &waits, store.now(), demand);
-    apply_decision(store, &record, &decision, demand).await?;
+    apply_decision(store, &record, &decision, demand, unfit, size).await?;
     Ok(Some(decision))
 }
 async fn apply_decision(
@@ -188,6 +215,8 @@ async fn apply_decision(
     record: &ElasticGroupRecord,
     decision: &Decision,
     demand: Demand,
+    unfit: usize,
+    size: Option<u64>,
 ) -> anyhow::Result<()> {
     let unmet = demand.unmet;
     let placed_waits = demand.placed;
@@ -196,6 +225,7 @@ async fn apply_decision(
     let max = record.definition.max;
     let capped = needed > max;
     let group = &record.definition.group;
+    warn_on_size(group, unfit, size);
     match &decision {
         Decision::Raise { desired, cause } | Decision::Lower { desired, cause } => {
             store.set_elastic_desired(group, *desired, cause).await?;
@@ -204,13 +234,30 @@ async fn apply_decision(
             } else {
                 "autoscale lowered desired"
             };
-            tracing::info!(group, from = record.desired, to = desired, waiting = unmet, placed_waits, busy, max, capped, reason = %cause.reason, "{message}");
+            tracing::info!(group, from = record.desired, to = desired, waiting = unmet, unfit, placed_waits, busy, max, capped, reason = %cause.reason, "{message}");
         }
         Decision::Keep => {
-            tracing::debug!(group, from = record.desired, to = record.desired, waiting = unmet, placed_waits, busy, max, capped, reason = %record.desired_cause.reason, "autoscale kept desired");
+            tracing::debug!(group, from = record.desired, to = record.desired, waiting = unmet, unfit, placed_waits, busy, max, capped, reason = %record.desired_cause.reason, "autoscale kept desired");
         }
     }
     Ok(())
+}
+/// Keep size-configuration warnings separate from the desired-count decision log.
+fn warn_on_size(group: &str, unfit: usize, size: Option<u64>) {
+    if unfit > 0 {
+        tracing::warn!(
+            group,
+            unfit,
+            node_memory_mib = size,
+            "autoscale: waiting computers need more memory than one machine of the group offers; no machine is bought for them"
+        );
+    }
+    if size.is_none() {
+        tracing::warn!(
+            group,
+            "autoscale: group has no node_memory_mib; every GPU wait counts. Add node_memory_mib to the group in the swarm spec and run swarmy swarm scale"
+        );
+    }
 }
 async fn load(store: &Store, group: &ElasticGroupRecord) -> anyhow::Result<Vec<MachineLoad>> {
     let mut loads = Vec::new();
@@ -321,10 +368,44 @@ mod tests {
             agent_id: AgentId::from_ulid(Ulid::generate()),
             agent_name: Some("w1".into()),
             requirement,
+            memory_mib: 768,
             since: at(0),
             gpu_request: None,
             placed: false,
         }
+    }
+    #[test]
+    fn fitting_counts_waits_too_large_for_the_machine() {
+        let small = wait(GpuRequirement::Shared);
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        let (fits, unfit) = fitting(Some(12288), &[small.clone(), big.clone()]);
+        assert_eq!(fits, vec![small.clone()]);
+        assert_eq!(unfit, 1);
+        let (fits, unfit) = fitting(None, &[small, big]);
+        assert_eq!(fits.len(), 2);
+        assert_eq!(unfit, 0);
+    }
+    #[test]
+    fn a_wait_larger_than_the_machine_buys_nothing() {
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        assert_eq!(
+            decide(&group(0, 1, 1), &[], &fitting(Some(12288), &[big]).0, at(0)),
+            Decision::Keep
+        );
+    }
+    #[test]
+    fn only_waits_that_fit_raise_and_name_the_cause() {
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        let small = wait(GpuRequirement::Shared);
+        let (fits, _) = fitting(Some(12288), &[big, small.clone()]);
+        let Decision::Raise { desired, cause } = decide(&group(0, 1, 1), &[], &fits, at(0)) else {
+            panic!("fitting wait must raise desired");
+        };
+        assert_eq!(desired, 1);
+        assert_eq!(cause.agent, Some(small.agent_id));
     }
     fn machine(
         number: u32,
@@ -340,6 +421,21 @@ mod tests {
             gpu,
             idle_since,
         }
+    }
+    #[test]
+    fn an_unfit_wait_does_not_keep_an_idle_machine() {
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        let idle = machine(1, MachineState::Joined, vec![], 0, Some(at(0)));
+        assert!(matches!(
+            decide(
+                &group(1, 1, 1),
+                &[idle],
+                &fitting(Some(12288), &[big]).0,
+                at(31)
+            ),
+            Decision::Lower { desired: 0, .. }
+        ));
     }
     #[test]
     fn one_shared_wait_raises_to_one_with_its_cause() {

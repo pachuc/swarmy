@@ -31,6 +31,7 @@ const API_IDEMPOTENCY: &str = "api_idempotency";
 const API_SESSION_ID: &str = "api_session_id";
 const BOOT_SET: &str = "boot_set";
 const CACHE_AFFINITY: &str = "cache_affinity";
+const CAPACITY_SHORTFALL: &str = "capacity_shortfall";
 const CHUNK_REUSED: &str = "chunk_reused";
 const COMPUTER_DELETED: &str = "computer_deleted";
 const COMPUTER_MEMORY: &str = "computer_memory";
@@ -40,6 +41,7 @@ const CREDENTIAL_ENTRY: &str = "credential_entry";
 const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
 const ELASTIC_CREATIONS: &str = "elastic_creations";
 const ELASTIC_GROUP: &str = "elastic_group";
+const ELASTIC_GROUP_NODE_MEMORY: &str = "elastic_group_node_memory";
 const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
 const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
 const EVENT: &str = "event";
@@ -353,6 +355,11 @@ impl<'a> Keys<'a> {
     pub(crate) fn inference_input_space(&self) -> Subspace {
         self.root.subspace(&(INFERENCE_INPUT,))
     }
+    pub(crate) fn capacity_shortfall(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .subspace(&(CAPACITY_SHORTFALL,))
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
     pub(crate) fn session_wait(&self, id: SessionId) -> Vec<u8> {
         self.session_wait_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -575,6 +582,11 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn provisioner_sequence(&self) -> Vec<u8> {
         self.root.subspace(&(PROVISIONER_SEQUENCE,)).pack(&())
+    }
+    pub(crate) fn elastic_group_node_memory(&self, group: &str) -> Vec<u8> {
+        self.root
+            .subspace(&(ELASTIC_GROUP_NODE_MEMORY,))
+            .pack(&(group,))
     }
     pub(crate) fn elastic_group(&self, group: &str) -> Vec<u8> {
         self.elastic_group_space().pack(&(group,))

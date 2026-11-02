@@ -3037,6 +3037,76 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
 mod timers;
 
 #[tokio::test]
+async fn a_capacity_park_keeps_its_shortfall_until_the_wait_clears() {
+    use swarmy_core::{GpuRequirement, Shortfall};
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    let shortfall = Shortfall {
+        needed_mib: 24576,
+        largest_mib: 12288,
+    };
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            Some(shortfall),
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let (wait, stored) = f.store.session_wait_detail(id).await.unwrap().unwrap();
+    assert_eq!(stored, Some(shortfall));
+    assert!(wait.reasons(stored)[0].contains("MiB of memory"));
+    assert!(f.store.wake_wait(id, timestamp(130)).await.unwrap());
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            None,
+            timestamp(140),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store.session_wait_detail(id).await.unwrap().unwrap().1,
+        None
+    );
+    assert!(f.store.wake_wait(id, timestamp(170)).await.unwrap());
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            Some(shortfall),
+            timestamp(180),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    f.store.clear_session_wait(id).await.unwrap();
+    assert!(f.store.session_wait_detail(id).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn capacity_park_releases_the_lease_and_notices_once() {
     use swarmy_core::GpuRequirement;
     use swarmy_store::{CAPACITY_WAIT_RETRY, CapacityPark, WaitKind};
@@ -3053,6 +3123,7 @@ async fn capacity_park_releases_the_lease_and_notices_once() {
             id,
             &lease,
             GpuRequirement::Shared,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3102,6 +3173,7 @@ async fn capacity_park_releases_the_lease_and_notices_once() {
                 id,
                 &lease,
                 GpuRequirement::Shared,
+                None,
                 timestamp(140),
                 CAPACITY_WAIT_RETRY * 120
             )
@@ -3150,6 +3222,7 @@ async fn capacity_wait_expires_at_the_max_and_keeps_the_lease() {
                     id,
                     &lease,
                     GpuRequirement::None,
+                    None,
                     timestamp(at),
                     std::time::Duration::from_secs(60)
                 )
@@ -3174,6 +3247,7 @@ async fn capacity_wait_expires_at_the_max_and_keeps_the_lease() {
                 id,
                 &lease,
                 GpuRequirement::None,
+                None,
                 timestamp(160),
                 std::time::Duration::from_secs(60)
             )
@@ -3208,6 +3282,7 @@ async fn inference_clear_keeps_a_capacity_wait() {
             id,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3248,6 +3323,7 @@ async fn breaker_does_not_park_a_session_woken_from_capacity() {
             id,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3293,6 +3369,7 @@ async fn wake_capacity_waits_wakes_only_capacity_waits() {
             a,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3343,6 +3420,7 @@ async fn interrupt_of_a_capacity_wait_hands_it_to_a_worker() {
             id,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3389,6 +3467,7 @@ async fn finished_turn_clears_a_capacity_wait() {
                 id,
                 &lease,
                 GpuRequirement::None,
+                None,
                 timestamp(100),
                 std::time::Duration::from_secs(60)
             )
@@ -3423,6 +3502,7 @@ async fn finished_turn_clears_a_capacity_wait() {
                 id,
                 &lease,
                 GpuRequirement::None,
+                None,
                 timestamp(200),
                 std::time::Duration::from_secs(60)
             )

@@ -23,6 +23,35 @@ fn definition(group: &str) -> ElasticGroupDefinition {
     }
 }
 #[tokio::test]
+async fn a_group_size_is_recorded_apart_from_the_group() {
+    let Some(stack) = swarmy_testkit::Stack::load("elastic") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    let record = store.put_elastic_group(&definition("sized")).await.unwrap();
+    assert_eq!(
+        store.elastic_group_node_memory("sized").await.unwrap(),
+        None
+    );
+    store
+        .set_elastic_group_node_memory("sized", 12288)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.elastic_group_node_memory("sized").await.unwrap(),
+        Some(12288)
+    );
+    assert_eq!(
+        store.get_elastic_group("sized").await.unwrap(),
+        Some(record)
+    );
+    assert!(matches!(
+        store.set_elastic_group_node_memory("sized", 0).await,
+        Err(StoreError::Domain(DomainError::InvalidElasticGroup(_)))
+    ));
+}
+
+#[tokio::test]
 async fn register_and_set_desired() {
     let Some(stack) = swarmy_testkit::Stack::load("elastic") else {
         return;

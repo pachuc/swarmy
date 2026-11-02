@@ -75,7 +75,8 @@ pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 
 mod capacity;
 pub use capacity::{
-    capacity_wait_exceeded, capacity_wait_notice, capacity_wait_reason, node_satisfies,
+    MachineOffer, Shortfall, capacity_wait_exceeded, capacity_wait_notice, capacity_wait_reason,
+    machine_holds, node_satisfies, shortfall,
 };
 mod rebuild;
 pub use rebuild::{UNCLAIMED_DISPATCH_EXPIRED, computer_rebuilt_message};

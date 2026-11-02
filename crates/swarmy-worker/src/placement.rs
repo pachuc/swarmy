@@ -5,7 +5,8 @@ use tokio::sync::Mutex;
 use anyhow::{Result, bail};
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, GpuRequirement, NodeId, NodeRecord, NodeRole, PlacementRecord, VolumeId,
+    AgentId, GpuRequirement, NodeId, NodeRecord, NodeRole, PlacementRecord, SandboxRequirements,
+    VolumeId,
 };
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
 
@@ -14,6 +15,7 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
 #[derive(Debug)]
 pub(crate) struct NoEligibleNode {
     pub(crate) requirement: GpuRequirement,
+    pub(crate) shortfall: Option<swarmy_core::Shortfall>,
     /// The last store refusal, when some node was eligible but refused.
     pub(crate) rejection: Option<StoreError>,
 }
@@ -32,7 +34,11 @@ impl std::fmt::Display for NoEligibleNode {
                 f,
                 "no live sandbox node with a GPU can host this dedicated GPU computer"
             ),
+        }?;
+        if let Some(shortfall) = self.shortfall {
+            write!(f, "; {shortfall}")?;
         }
+        Ok(())
     }
 }
 
@@ -93,7 +99,8 @@ pub(crate) async fn resolve_at(
     lease: Duration,
     now: Timestamp,
 ) -> Result<PlacementRecord> {
-    let requirement = store.computer_requirements(agent).await?.gpu;
+    let requirements = store.computer_requirements(agent).await?;
+    let requirement = requirements.gpu;
     // The last rejection explains a placement that never succeeds.
     let mut rejection = None;
     // Contention can change the winner while capacity is being reserved. Re-read
@@ -114,6 +121,7 @@ pub(crate) async fn resolve_at(
                 store.request_placement_release(agent).await?;
                 return Err(NoEligibleNode {
                     requirement,
+                    shortfall: None,
                     rejection: None,
                 }
                 .into());
@@ -131,19 +139,9 @@ pub(crate) async fn resolve_at(
         {
             bail!("waiting for the previous computer's volume writer lease to expire");
         }
-        let mut nodes = Vec::new();
-        let mut cursor = None;
-        let since = now.checked_sub(Duration::from_secs(30))?;
-        loop {
-            let (page, next) = store.scan_live_nodes(cursor, since, MAX_SCAN_LIMIT).await?;
-            nodes.extend(page);
-            if next.is_none() {
-                break;
-            }
-            cursor = next;
-        }
+        let mut nodes = live_nodes(store, now).await?;
         let scratch_node = store.scratch(agent).await?.map(|record| record.node_id);
-        order_candidates(&mut nodes, requirement, scratch_node, old.as_ref());
+        order_candidates(&mut nodes, requirements, scratch_node, old.as_ref());
         if nodes.is_empty() {
             break;
         }
@@ -178,28 +176,77 @@ pub(crate) async fn resolve_at(
     }
     Err(NoEligibleNode {
         requirement,
+        shortfall: capacity_shortfall(store, requirements, now).await?,
         rejection,
     }
     .into())
 }
 
+/// Sandbox-capable nodes with a heartbeat in the last thirty seconds.
+async fn live_nodes(store: &Store, now: Timestamp) -> Result<Vec<NodeRecord>> {
+    let mut nodes = Vec::new();
+    let mut cursor = None;
+    let since = now.checked_sub(Duration::from_secs(30))?;
+    loop {
+        let (page, next) = store.scan_live_nodes(cursor, since, MAX_SCAN_LIMIT).await?;
+        nodes.extend(page);
+        if next.is_none() {
+            break;
+        }
+        cursor = next;
+    }
+    Ok(nodes)
+}
+/// Find a memory bottleneck among live sandbox nodes and sized GPU groups.
+async fn capacity_shortfall(
+    store: &Store,
+    requirements: SandboxRequirements,
+    now: Timestamp,
+) -> Result<Option<swarmy_core::Shortfall>> {
+    let mut offers: Vec<_> = live_nodes(store, now)
+        .await?
+        .iter()
+        .filter(|node| node.roles.contains(&NodeRole::Sandbox) && node.capacity.sandboxes > 0)
+        .map(swarmy_core::MachineOffer::of_node)
+        .collect();
+    if requirements.gpu.needs_card() {
+        for group in store
+            .list_elastic_groups()
+            .await?
+            .into_iter()
+            .filter(|g| g.definition.autoscale)
+        {
+            if let Some(memory_mib) = store
+                .elastic_group_node_memory(&group.definition.group)
+                .await?
+            {
+                offers.push(swarmy_core::MachineOffer {
+                    memory_mib,
+                    cards: true,
+                });
+            }
+        }
+    }
+    Ok(swarmy_core::shortfall(&offers, requirements))
+}
+
 fn order_candidates(
     nodes: &mut Vec<NodeRecord>,
-    requirement: GpuRequirement,
+    requirements: SandboxRequirements,
     scratch_node: Option<NodeId>,
     old: Option<&PlacementRecord>,
 ) {
     nodes.retain(|node| {
         node.roles.contains(&NodeRole::Sandbox)
             && node.capacity.sandboxes > 0
-            && swarmy_core::node_satisfies(node, requirement)
+            && swarmy_core::machine_holds(swarmy_core::MachineOffer::of_node(node), requirements)
     });
     // Admission remains transactional. A CPU node beats scratch on a card node
     // for CPU work; ineligible nodes are filtered before scratch can win.
     nodes.sort_by_key(|node| {
         (
             old.is_some_and(|old| old.node_id == node.node_id),
-            !requirement.needs_card() && node.gpu_count() > 0,
+            !requirements.gpu.needs_card() && node.gpu_count() > 0,
             scratch_node != Some(node.node_id),
             node.node_id,
         )
@@ -212,6 +259,12 @@ mod tests {
     use super::*;
     use swarmy_core::{GpuCards, NodeCapacity};
 
+    fn needs(gpu: GpuRequirement) -> SandboxRequirements {
+        SandboxRequirements {
+            memory_mib: 768,
+            gpu,
+        }
+    }
     fn node(number: u128, cards: bool) -> NodeRecord {
         NodeRecord {
             node_id: NodeId::from_ulid(ulid::Ulid::from(number)),
@@ -235,9 +288,23 @@ mod tests {
         nodes.iter().map(|node| node.node_id).collect()
     }
     #[test]
+    fn a_node_too_small_for_the_computer_is_not_a_candidate() {
+        let mut nodes = vec![node(1, true)];
+        order_candidates(
+            &mut nodes,
+            SandboxRequirements {
+                memory_mib: 2048,
+                gpu: GpuRequirement::Shared,
+            },
+            None,
+            None,
+        );
+        assert!(nodes.is_empty());
+    }
+    #[test]
     fn cpu_work_tries_card_nodes_last() {
         let mut nodes = vec![node(1, true), node(2, false)];
-        order_candidates(&mut nodes, GpuRequirement::None, None, None);
+        order_candidates(&mut nodes, needs(GpuRequirement::None), None, None);
         assert_eq!(
             ids(&nodes),
             vec![node(2, false).node_id, node(1, true).node_id]
@@ -248,7 +315,7 @@ mod tests {
         let mut nodes = vec![node(1, true), node(2, false)];
         order_candidates(
             &mut nodes,
-            GpuRequirement::None,
+            needs(GpuRequirement::None),
             Some(node(1, true).node_id),
             None,
         );
@@ -260,10 +327,10 @@ mod tests {
     #[test]
     fn gpu_work_sees_only_card_nodes() {
         let mut nodes = vec![node(1, false), node(2, true)];
-        order_candidates(&mut nodes, GpuRequirement::Shared, None, None);
+        order_candidates(&mut nodes, needs(GpuRequirement::Shared), None, None);
         assert_eq!(ids(&nodes), vec![node(2, true).node_id]);
         let mut nodes = vec![node(1, false)];
-        order_candidates(&mut nodes, GpuRequirement::Dedicated, None, None);
+        order_candidates(&mut nodes, needs(GpuRequirement::Dedicated), None, None);
         assert!(nodes.is_empty());
     }
     #[test]
@@ -271,7 +338,7 @@ mod tests {
         let mut nodes = vec![node(1, false), node(2, true), node(3, true)];
         order_candidates(
             &mut nodes,
-            GpuRequirement::Dedicated,
+            needs(GpuRequirement::Dedicated),
             Some(node(1, false).node_id),
             None,
         );
@@ -281,7 +348,7 @@ mod tests {
         );
         order_candidates(
             &mut nodes,
-            GpuRequirement::Dedicated,
+            needs(GpuRequirement::Dedicated),
             Some(node(3, true).node_id),
             None,
         );
@@ -304,7 +371,7 @@ mod tests {
         let mut nodes = vec![node(2, true), node(3, true)];
         order_candidates(
             &mut nodes,
-            GpuRequirement::Shared,
+            needs(GpuRequirement::Shared),
             Some(old.node_id),
             Some(&old),
         );
