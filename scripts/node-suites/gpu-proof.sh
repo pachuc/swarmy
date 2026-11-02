@@ -135,7 +135,7 @@ gpu_main_body() {
     call session image "$sid" "$call_id" --output "$out/screen.png" > "$out/image.json" || return 1
     python3 -E "$root/images/base-desktop/tests/png_check.py" "$out/screen.png" --kind screen > "$out/png.json" || return 1
     gpu_py summary "$out" "$agent" "$sid" "$provider" "$model" "$gpu" "$memory" "$started" "$probed" || return 1
-    if ! python3 -E -c 'import json,sys; sys.exit(json.load(open(sys.argv[1]))["processes_listed"])' "$out/probe.json"; then
+    if ! python3 -E -c 'import json,sys; sys.exit(not json.load(open(sys.argv[1]))["processes_listed"])' "$out/probe.json"; then
         echo 'note: nvidia-smi inside the sandbox lists no process; check nvidia-smi on the GPU host'
     fi
     if (( ! keep_agent )); then call agent delete "$agent" --yes > "$out/agent-delete.json" || return 1; fi
