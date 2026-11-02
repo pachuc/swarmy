@@ -53,14 +53,14 @@ fn login(f: &Fixture, provider: &str, input: &str) {
 }
 #[test]
 fn cloud_login_without_terminal_or_stdin_explains_how_to_supply_secret() {
-    let f = Fixture::new();
+    let root = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .env_clear()
-        .env("HOME", f.path().join("home"))
-        .env("XDG_CONFIG_HOME", f.path().join("config"))
-        .env("XDG_DATA_HOME", f.path().join("data"))
-        .env("XDG_STATE_HOME", f.path().join("state"))
-        .env("XDG_CACHE_HOME", f.path().join("cache"))
+        .env("HOME", root.path().join("home"))
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .env("XDG_STATE_HOME", root.path().join("state"))
+        .env("XDG_CACHE_HOME", root.path().join("cache"))
         .args(["cloud", "login", "hetzner-cloud"])
         .stdin(Stdio::null())
         .output()
