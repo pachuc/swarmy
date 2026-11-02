@@ -25,6 +25,17 @@ use tokio::{net::UnixListener, task::JoinSet};
 /// # Errors
 /// Returns startup or service failures.
 pub fn run(args: Vec<OsString>) -> Result<()> {
+    if args.len() == 1 && args[0] == "--check-config" {
+        let loaded = swarmy_config::Settings::load()?;
+        println!(
+            "configuration ok: {}",
+            loaded.path.as_deref().map_or_else(
+                || "no file, defaults and environment".to_owned(),
+                |path| path.display().to_string()
+            )
+        );
+        return Ok(());
+    }
     let upgrade_processes = args.first().is_some_and(|arg| arg == "--upgrade-processes");
     if !upgrade_processes {
         swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-node", args)?;

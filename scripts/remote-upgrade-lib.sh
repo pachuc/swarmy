@@ -206,3 +206,12 @@ token_newer_than_node() {
     sudo -n test -e "$socket" || return 0
     sudo -n test "$file" -nt "$socket"
 }
+
+# Reject incompatible host settings before installing binaries or restarting units.
+check_host_config() {
+    local repo_dir=${1:?node directory} binary=${2:?new swarmy-node binary}
+    if ! sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary --check-config" >&2; then
+        echo "The new build rejects this host's configuration ($repo_dir/.swarmy/config.toml or $(swarmy_etc_dir)/node.env); fix the keys named above and run swarmy swarm upgrade again. Nothing was installed or restarted." >&2
+        return 1
+    fi
+}

@@ -72,6 +72,12 @@ pub enum Error {
         command: String,
         status: std::process::ExitStatus,
     },
+    #[error("ssh {command} failed with {status}: {stderr}")]
+    SshFailed {
+        command: String,
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
     #[error("SSH is unreachable at both instance addresses")]
     SshUnavailable,
     #[error("API at {endpoint}")]

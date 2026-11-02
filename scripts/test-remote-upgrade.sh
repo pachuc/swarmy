@@ -90,6 +90,27 @@ ExecStart=/usr/local/bin/swarmyd
 UNIT
 printf '[Service]\nExecStart=/usr/local/bin/swarmy-scheduler\n' > "$SWARMY_SYSTEMD_DIR/swarmy-scheduler.service"
 printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
+cat > "$work/good-node" <<'STUB'
+#!/usr/bin/env bash
+echo 'configuration ok'
+printf '%s %s\n' "$PWD" "$SWARMY_S3_ENDPOINT" >&2
+STUB
+cat > "$work/bad-node" <<'STUB'
+#!/usr/bin/env bash
+echo 'invalid configuration in x: [inference] max_wait_secs was removed; use [scheduler] max_session_wait_secs' >&2
+exit 1
+STUB
+chmod +x "$work/good-node" "$work/bad-node"
+check_host_config "$work" "$work/good-node" 2> "$work/good.log"
+grep -Fq "$work" "$work/good.log"
+grep -Fq 'http://127.0.0.1:8333' "$work/good.log"
+if check_host_config "$work" "$work/bad-node" 2> "$work/bad.log"; then
+    echo 'accepted rejected host configuration' >&2; exit 1
+fi
+grep -Fq '[inference] max_wait_secs was removed' "$work/bad.log"
+grep -Fq 'Nothing was installed or restarted' "$work/bad.log"
+awk '/check_host_config "\$repo_dir"/{c=NR} /sudo -n install -m 0755/{if(!i)i=NR} END{exit !(c && i && c<i)}' scripts/remote-upgrade.sh
+printf 'host config check: ok\n'
 for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmy-core; do touch "$root/usr/local/bin/$binary"; done
 unset unit_mode unit_user unit_home unit_repo unit_primary unit_tunnel_s3 unit_mount
 remove_unreferenced_retired_binaries 2>/dev/null
