@@ -414,7 +414,7 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
     let mut body = group_body("autoscale-second");
     body.autoscale = true;
     body.node_memory_mib = Some(12288);
-    body.idempotency_key = "autoscale-second".into();
+    let first = format!("{base}/gpu");
     assert_api_error(
         client
             .put(format!("{base}/gpu2"))
