@@ -407,7 +407,7 @@ developer volume tools live in the node daemon instead: run them as
 [volume tools](#volume-tools)). `models probe` uses the API host's credential resolver, so a laptop without
 provider keys can probe credentials stored in the swarm. Scripted `fake` probes read fixture files on the API host. The separately
 installed `swarmy-auth` helper handles interactive `auth login` and `auth import`;
-both save credentials through the API. Node installs omit it.
+both save credentials through the API. The helper opens the same SSH tunnel as the CLI for swarms served over SSH; `swarmy --swarm NAME auth import` and `swarmy --swarm NAME auth login` pass the selected swarm to it. Node installs omit it.
 
 ## Release builds
 

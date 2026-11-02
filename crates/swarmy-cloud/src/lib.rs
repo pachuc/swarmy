@@ -167,6 +167,7 @@ other_from!(
     reqwest::Error,
     swarmy_infra::download::Error,
     swarmy_infra::Error,
+    swarmy_client::Error,
     swarmy_infra::OutputError,
     url::ParseError,
     serde_json::Error,
