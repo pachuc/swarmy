@@ -450,6 +450,10 @@ swarmy swarm upgrade demo --services-only
 swarmy swarm upgrade demo --drain-timeout 600
 ```
 
+Upgrade checks each host with the new build of `swarmy-node --check-config` and its
+`node.env` before installing or restarting anything on that host. If the new
+build rejects the configuration, the error names removed keys and replacements,
+and the client error ends with the host's last stderr lines.
 Upgrade reconciles binaries and units in place. It upgrades the primary first
 because other nodes need its node API and credentials, then drains sandboxes
 before restarting other nodes. A full upgrade issues a node token on hosts

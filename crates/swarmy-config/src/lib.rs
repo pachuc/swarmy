@@ -29,6 +29,28 @@ use std::{
     time::Duration,
 };
 
+/// Known removed keys and their replacements, reported before typed decoding.
+const REMOVED_KEYS: &[(&str, &str, &str)] = &[(
+    "inference",
+    "max_wait_secs",
+    "[scheduler] max_session_wait_secs (SWARMY_MAX_SESSION_WAIT_SECONDS), removed 2026-10-29",
+)];
+
+fn removed_keys(table: &toml::Table) -> Vec<String> {
+    REMOVED_KEYS
+        .iter()
+        .filter(|(section, key, _)| {
+            table
+                .get(*section)
+                .and_then(toml::Value::as_table)
+                .is_some_and(|entry| entry.contains_key(*key))
+        })
+        .map(|(section, key, replacement)| {
+            format!("[{section}] {key} was removed; use {replacement}")
+        })
+        .collect()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
@@ -88,6 +110,8 @@ pub enum Error {
     StoreDirectory(&'static str),
     #[error("configuration I/O: {0}")]
     Io(#[from] std::io::Error),
+    #[error("invalid configuration in {}: {message}", path.display())]
+    InvalidFile { path: PathBuf, message: String },
     #[error("invalid configuration: {0}")]
     Decode(#[from] toml::de::Error),
     #[error("cannot encode configuration: {0}")]
@@ -930,7 +954,20 @@ impl Settings {
         if table.remove("remote").is_some() {
             tracing::warn!(path = %path.display(), "ignoring the removed [remote] section; delete it (swarms are described in ~/.config/swarmy/swarms/NAME.toml)");
         }
-        let settings: Self = table.try_into()?;
+        let removed = removed_keys(&table);
+        if !removed.is_empty() {
+            return Err(Error::InvalidFile {
+                path: path.to_owned(),
+                message: removed.join("; "),
+            });
+        }
+        let settings: Self =
+            table
+                .try_into()
+                .map_err(|error: toml::de::Error| Error::InvalidFile {
+                    path: path.to_owned(),
+                    message: error.to_string(),
+                })?;
         settings.validate()?;
         settings.catalog()?;
         Ok(settings)
@@ -1271,6 +1308,27 @@ fn set_node_id(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+
+    #[test]
+    fn a_removed_key_names_its_replacement_and_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[inference]\nmax_wait_secs = 30\n").unwrap();
+        let error = Settings::read(&path).err().unwrap().to_string();
+        assert!(error.contains(&path.display().to_string()));
+        assert!(error.contains("[inference] max_wait_secs was removed"));
+        assert!(error.contains("[scheduler] max_session_wait_secs"));
+    }
+
+    #[test]
+    fn an_unknown_key_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[api]\nbogus = 1\n").unwrap();
+        let error = Settings::read(&path).err().unwrap().to_string();
+        assert!(error.contains(&path.display().to_string()));
+        assert!(error.contains("bogus"));
+    }
 
     #[tokio::test]
     async fn accepted_sockets_skip_nagle() {

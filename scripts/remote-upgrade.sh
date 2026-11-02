@@ -21,7 +21,6 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 if [[ $source_mode == prebuilt ]]; then
     bin_dir=$(release_bundle_dir "$repo_dir")
     check_release_bundle "$bin_dir" "$mode"
-    if [[ $mode == stack ]]; then install_core_library "$bin_dir/libfdb_c.so"; fi
 else
     command -v cargo >/dev/null || { echo 'This node has no Rust toolchain (it was provisioned from release binaries); upgrade it with a release client or SWARMY_RELEASE_BASE_URL' >&2; exit 1; }
     source_dir=$(node_source_dir "$repo_dir")
@@ -43,6 +42,8 @@ else
     ) >&2
     bin_dir=$source_dir/target/release
 fi
+check_host_config "$repo_dir" "$bin_dir/$(swarmy_node_binary)"
+if [[ $source_mode == prebuilt && $mode == stack ]]; then install_core_library "$bin_dir/libfdb_c.so"; fi
 read_shared_list binaries swarmy_mode_binaries "$mode"
 changed=()
 restarted=()

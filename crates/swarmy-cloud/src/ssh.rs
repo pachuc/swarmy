@@ -1,5 +1,6 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
+    collections::VecDeque,
     ffi::OsStr,
     fmt::Write as _,
     path::{Path, PathBuf},
@@ -9,7 +10,7 @@ use std::{
 
 use crate::Result;
 use crate::provision::Machine;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::{process::Command, time::timeout};
 
 /// Options shared by every SSH and rsync invocation for a node. The host key
@@ -222,6 +223,48 @@ async fn run_output(command: &mut Command, action: &str) -> Result<std::process:
         return Err(crate::Error::SshStatus {
             command: action.to_owned(),
             status: output.status,
+        });
+    }
+    Ok(output)
+}
+
+/// Lines of remote stderr kept for a failed upgrade.
+const STDERR_TAIL_LINES: usize = 10;
+
+async fn run_output_with_stderr(
+    command: &mut Command,
+    action: &str,
+) -> Result<std::process::Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(crate::Error::ssh(action))?;
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let relay = async {
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        let mut tail = VecDeque::new();
+        while let Some(line) = lines.next_line().await.map_err(crate::Error::ssh(action))? {
+            cloud_err!("{line}");
+            if !line.trim().is_empty() {
+                if tail.len() == STDERR_TAIL_LINES {
+                    tail.pop_front();
+                }
+                tail.push_back(line);
+            }
+        }
+        Ok::<_, crate::Error>(tail)
+    };
+    let (output, tail) = tokio::join!(child.wait_with_output(), relay);
+    let output = output.map_err(crate::Error::ssh(action))?;
+    let tail = tail?;
+    if !output.status.success() {
+        return Err(crate::Error::SshFailed {
+            command: action.to_owned(),
+            status: output.status,
+            stderr: tail.into_iter().collect::<Vec<_>>().join("\n"),
         });
     }
     Ok(output)
@@ -759,8 +802,7 @@ impl Ssh {
             if prebuilt { "prebuilt" } else { "build" }
         );
         let mut command = node_command(node, address, &script)?;
-        command.stderr(Stdio::inherit());
-        let output = run_output(&mut command, "upgrade host").await?;
+        let output = run_output_with_stderr(&mut command, "upgrade host").await?;
         serde_json::from_slice(&output.stdout)
             .map_err(|source| crate::Error::context(source, "parse the host upgrade summary"))
     }
@@ -1605,6 +1647,33 @@ async fn wait_ssh_for(node: &Machine, attempts: u32) -> Result<String> {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::{Ssh, feed_and_wait, image_build_command, tunnel_authorization};
+
+    #[tokio::test]
+    async fn a_failed_upgrade_command_reports_its_last_stderr_lines() {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("for i in $(seq 1 15); do echo progress $i >&2; done; echo 'invalid configuration in /x: [inference] max_wait_secs was removed' >&2; exit 3");
+        let error = super::run_output_with_stderr(&mut command, "upgrade host")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, crate::Error::SshFailed { .. }));
+        let text = error.to_string();
+        assert!(text.contains("exit status: 3"));
+        assert!(text.contains("max_wait_secs"));
+        assert!(text.contains("progress 15"));
+        assert!(!text.contains("progress 5\n"));
+    }
+
+    #[tokio::test]
+    async fn a_successful_command_returns_its_stdout() {
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg("printf '{\"ok\":true}'; echo note >&2");
+        let output = super::run_output_with_stderr(&mut command, "upgrade host")
+            .await
+            .unwrap();
+        assert_eq!(output.stdout, br#"{"ok":true}"#);
+    }
 
     /// The fed input must reach end of file: a reader such as the remote
     /// `cat` that stores bucket keys returns only once stdin is closed.

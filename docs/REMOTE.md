@@ -147,6 +147,8 @@ checkpoint when their leases expire.
 
 ## Host repair
 
+To check host configuration by hand, run
+`sudo sh -c 'cd ~swarmy/swarmy && set -a && . /etc/swarmy/node.env && set +a && /usr/local/bin/swarmy-node --check-config'`.
 Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
 matching client. The primary upgrades first because other nodes need its node
 API and credentials. A full upgrade issues missing node tokens, keeps the node
