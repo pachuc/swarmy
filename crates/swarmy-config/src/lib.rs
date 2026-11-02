@@ -29,6 +29,7 @@ use std::{
     time::Duration,
 };
 
+/// Known removed keys and their replacements, reported before typed decoding.
 const REMOVED_KEYS: &[(&str, &str, &str)] = &[(
     "inference",
     "max_wait_secs",
@@ -943,7 +944,6 @@ impl Settings {
         paths::config(environment).map(|dir| dir.join("config.toml"))
     }
 
-    /// Known removed keys and their replacements, reported together before typed decoding.
     /// Read a file without environment overrides or path resolution.
     /// # Errors
     /// Fails if the file cannot be read or decoded.
