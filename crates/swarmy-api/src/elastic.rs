@@ -25,7 +25,14 @@ pub(super) async fn show(
                 "elastic group not found",
             )
         })?;
-    Ok(Json(views::elastic_group(&record)))
+    Ok(Json(views::elastic_group(
+        &record,
+        state
+            .store
+            .elastic_group_node_memory(&group)
+            .await
+            .map_err(storage)?,
+    )))
 }
 fn invalid(message: impl Into<String>) -> ApiFailure {
     ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_elastic_group", message)
@@ -54,6 +61,9 @@ fn definition(
         .map_err(|_| invalid("primary_address must be the stack host's public IPv4 address"))?;
     swarmy_config::validate_service_user(&body.service_user)
         .map_err(|error| invalid(error.to_string()))?;
+    if body.node_memory_mib == Some(0) {
+        return Err(invalid("node_memory_mib must be at least 1"));
+    }
     if body.image.as_deref() == Some("") {
         return Err(invalid("image must not be empty"));
     }
@@ -88,12 +98,15 @@ pub(super) async fn put(
         &key,
         &format!("swarm-groups:{group}:put"),
         async move {
-            Ok(Json(views::elastic_group(
-                &store
-                    .put_elastic_group(&definition)
-                    .await
-                    .map_err(storage)?,
-            )))
+            let size = body.node_memory_mib.or(store.elastic_group_node_memory(&group).await.map_err(storage)?);
+            if body.autoscale && size.is_none() {
+                return Err(invalid("autoscale needs node_memory_mib: add node_memory_mib = MIB to the group in the swarm spec (the memory one machine offers to computers after the node's reserve; swarmy doctor --json shows capacity.memory_bytes once a machine has joined) and run swarmy swarm scale again"));
+            }
+            let record = store.put_elastic_group(&definition).await.map_err(storage)?;
+            if let Some(memory_mib) = body.node_memory_mib {
+                store.set_elastic_group_node_memory(&group, memory_mib).await.map_err(storage)?;
+            }
+            Ok(Json(views::elastic_group(&record, size)))
         },
     )
     .await
@@ -119,6 +132,10 @@ pub(super) async fn set_desired(
                             body.reason.as_deref().unwrap_or("set through the API"),
                         ),
                     )
+                    .await
+                    .map_err(storage)?,
+                store
+                    .elastic_group_node_memory(&group)
                     .await
                     .map_err(storage)?,
             )))

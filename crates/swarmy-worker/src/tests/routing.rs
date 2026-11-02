@@ -1659,7 +1659,7 @@ async fn capacity_wait_past_the_max_fails_the_calls_and_continues() {
     f.step(id).await;
     let events = f.store.read_events(id, 0, 64).await.unwrap();
     let error =
-        swarmy_core::capacity_wait_exceeded(GpuRequirement::None, Duration::from_secs(3600));
+        swarmy_core::capacity_wait_exceeded(GpuRequirement::None, None, Duration::from_secs(3600));
     assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Error { error: actual }, .. } if actual == &error)).count(), 1);
     assert!(f.store.session_wait(id).await.unwrap().is_none());
     assert_eq!(

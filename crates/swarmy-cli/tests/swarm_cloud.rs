@@ -349,6 +349,7 @@ fn mixed_cloud_stack_and_existing_nodes() {
             price_per_hour: None,
             currency: None,
             autoscale: false,
+            node_memory_mib: None,
         },
     );
     spec.placement.nodes = vec!["box".into()];

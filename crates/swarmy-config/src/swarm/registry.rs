@@ -334,6 +334,7 @@ pub(super) mod tests {
                     price_per_hour: None,
                     currency: None,
                     autoscale: false,
+                    node_memory_mib: None,
                 },
             )]
             .into(),

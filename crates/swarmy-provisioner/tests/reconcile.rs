@@ -856,6 +856,7 @@ async fn new_machine_joins_and_wakes_capacity_waits() {
             session.session_id,
             &lease,
             GpuRequirement::Shared,
+            None,
             f.store.now(),
             Duration::from_hours(1),
         )
@@ -1298,6 +1299,7 @@ async fn gpu_waiter(f: &Fixture, name: &str, mode: &str, reason: &str) -> (Agent
             id,
             &lease,
             requirement,
+            None,
             f.store.now(),
             Duration::from_hours(1),
         )

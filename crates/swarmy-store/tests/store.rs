@@ -3053,6 +3053,7 @@ async fn capacity_park_releases_the_lease_and_notices_once() {
             id,
             &lease,
             GpuRequirement::Shared,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3102,6 +3103,7 @@ async fn capacity_park_releases_the_lease_and_notices_once() {
                 id,
                 &lease,
                 GpuRequirement::Shared,
+                None,
                 timestamp(140),
                 CAPACITY_WAIT_RETRY * 120
             )
@@ -3150,6 +3152,7 @@ async fn capacity_wait_expires_at_the_max_and_keeps_the_lease() {
                     id,
                     &lease,
                     GpuRequirement::None,
+                    None,
                     timestamp(at),
                     std::time::Duration::from_secs(60)
                 )
@@ -3174,6 +3177,7 @@ async fn capacity_wait_expires_at_the_max_and_keeps_the_lease() {
                 id,
                 &lease,
                 GpuRequirement::None,
+                None,
                 timestamp(160),
                 std::time::Duration::from_secs(60)
             )
@@ -3208,6 +3212,7 @@ async fn inference_clear_keeps_a_capacity_wait() {
             id,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3248,6 +3253,7 @@ async fn breaker_does_not_park_a_session_woken_from_capacity() {
             id,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3293,6 +3299,7 @@ async fn wake_capacity_waits_wakes_only_capacity_waits() {
             a,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3343,6 +3350,7 @@ async fn interrupt_of_a_capacity_wait_hands_it_to_a_worker() {
             id,
             &lease,
             GpuRequirement::None,
+            None,
             timestamp(100),
             std::time::Duration::from_secs(3600),
         )
@@ -3389,6 +3397,7 @@ async fn finished_turn_clears_a_capacity_wait() {
                 id,
                 &lease,
                 GpuRequirement::None,
+                None,
                 timestamp(100),
                 std::time::Duration::from_secs(60)
             )
@@ -3423,6 +3432,7 @@ async fn finished_turn_clears_a_capacity_wait() {
                 id,
                 &lease,
                 GpuRequirement::None,
+                None,
                 timestamp(200),
                 std::time::Duration::from_secs(60)
             )

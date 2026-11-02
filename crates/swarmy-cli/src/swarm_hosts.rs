@@ -100,6 +100,7 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
         price_per_hour: None,
         currency: None,
         autoscale: false,
+        node_memory_mib: None,
     };
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("control".into(), group(size.clone(), 1, args.nodes == 0));
@@ -218,6 +219,7 @@ pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> R
                 price_per_hour: None,
                 currency: None,
                 autoscale: false,
+                node_memory_mib: None,
             },
         )]
         .into(),
@@ -553,6 +555,7 @@ pub(crate) fn elastic_scale_requests(
         external_bucket: provision::external_bucket(spec, record),
         network_id: groups::joined_network(spec, record, group).to_owned(),
         image: selected.image.clone(),
+        node_memory_mib: selected.node_memory_mib,
     };
     let desired = swarmy_api_types::SetElasticDesired {
         idempotency_key: ulid::Ulid::generate().to_string(),

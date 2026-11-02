@@ -80,11 +80,11 @@ impl SessionWait {
         }
     }
     #[must_use]
-    pub fn reasons(&self) -> Vec<String> {
+    pub fn reasons(&self, shortfall: Option<swarmy_core::Shortfall>) -> Vec<String> {
         match &self.kind {
             WaitKind::Inference(history) => history.reasons.clone(),
             WaitKind::Capacity { requirement } => {
-                vec![swarmy_core::capacity_wait_reason(*requirement)]
+                vec![swarmy_core::capacity_wait_reason(*requirement, shortfall)]
             }
         }
     }
@@ -96,6 +96,7 @@ pub struct GpuCapacityWait {
     pub agent_id: AgentId,
     pub agent_name: Option<String>,
     pub requirement: GpuRequirement,
+    pub memory_mib: u64,
     pub since: Timestamp,
     /// Set when the agent asked for the card itself with `request_gpu`.
     pub gpu_request: Option<swarmy_core::GpuRequest>,
@@ -164,6 +165,10 @@ impl Store {
                         agent_id: session.agent_id,
                         agent_name: agent.as_ref().map(|a| a.name.clone()),
                         requirement,
+                        memory_mib: agent.as_ref().map_or(
+                            swarmy_core::SandboxRequirements::default().memory_mib,
+                            |a| a.requirements.memory_mib,
+                        ),
                         since: wait.since,
                         gpu_request: agent.and_then(|a| a.gpu_request),
                         placed,
@@ -212,6 +217,7 @@ impl Store {
     ) {
         trx.clear(&self.keys().session_wait_due(wait.wake_at, id));
         trx.clear(&self.keys().session_wait(id));
+        trx.clear(&self.keys().capacity_shortfall(id));
     }
 
     /// Read a session's current wait of either kind.
@@ -222,6 +228,26 @@ impl Store {
             .await
     }
 
+    /// Read a wait and its memory shortfall together.
+    /// # Errors
+    /// Storage or decoding failures.
+    pub async fn session_wait_detail(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<(SessionWait, Option<swarmy_core::Shortfall>)>> {
+        self.transaction(|trx| async move {
+            let Some(wait) = read::<SessionWait>(&trx, &self.keys().session_wait(id)).await? else {
+                return Ok(None);
+            };
+            let shortfall = if wait.capacity().is_some() {
+                read(&trx, &self.keys().capacity_shortfall(id)).await?
+            } else {
+                None
+            };
+            Ok(Some((wait, shortfall)))
+        })
+        .await
+    }
     /// Park a runnable session before it can submit work to an open entry.
     /// # Errors
     /// Returns storage failures or an invalid session state.
@@ -452,6 +478,7 @@ impl Store {
         id: SessionId,
         lease: &Lease,
         requirement: GpuRequirement,
+        shortfall: Option<swarmy_core::Shortfall>,
         now: Timestamp,
         max_wait: std::time::Duration,
     ) -> Result<CapacityPark> {
@@ -485,6 +512,11 @@ impl Store {
                 kind: WaitKind::Capacity { requirement },
             };
             write(&trx, &self.keys().session_wait(id), &wait)?;
+            if let Some(shortfall) = shortfall {
+                write(&trx, &self.keys().capacity_shortfall(id), &shortfall)?;
+            } else {
+                trx.clear(&self.keys().capacity_shortfall(id));
+            }
             write(&trx, &self.keys().session_wait_due(wake_at, id), &())?;
             let mut session = self.session(&trx, id).await?;
             let notice = if first {
@@ -495,7 +527,11 @@ impl Store {
                         id: MessageId::from_ulid(ulid::Ulid::generate()),
                         role: MessageRole::System,
                         parts: vec![Part::Text {
-                            text: swarmy_core::capacity_wait_notice(requirement, max_wait),
+                            text: swarmy_core::capacity_wait_notice(
+                                requirement,
+                                shortfall,
+                                max_wait,
+                            ),
                         }],
                     },
                 };

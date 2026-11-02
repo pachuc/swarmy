@@ -106,6 +106,9 @@ pub struct GroupSpec {
     /// Elastic groups only: the provisioner scales the group for sessions waiting for a GPU.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub autoscale: bool,
+    /// Memory one elastic machine offers to computers after the system reserve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_memory_mib: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -213,12 +216,20 @@ impl GroupSpec {
 }
 fn elastic_failure(swarm: &str, g: &str, group: &GroupSpec) -> Option<String> {
     if !group.elastic {
+        if group.node_memory_mib.is_some() {
+            return Some(format!(
+                "group \"{g}\": node_memory_mib applies only to elastic groups"
+            ));
+        }
         return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some() || group.autoscale)
             .then(|| {
                 format!(
                     "group \"{g}\": max, price_per_hour, currency and autoscale apply only to elastic groups"
                 )
             });
+    }
+    if group.node_memory_mib == Some(0) {
+        return Some(format!("group \"{g}\": node_memory_mib must be at least 1"));
     }
     if matches!(
         group.module,
@@ -369,6 +380,7 @@ impl SwarmSpec {
                     price_per_hour: None,
                     currency: None,
                     autoscale: false,
+                    node_memory_mib: None,
                 },
             )]
             .into(),

@@ -40,6 +40,7 @@ const CREDENTIAL_ENTRY: &str = "credential_entry";
 const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
 const ELASTIC_CREATIONS: &str = "elastic_creations";
 const ELASTIC_GROUP: &str = "elastic_group";
+const ELASTIC_GROUP_NODE_MEMORY: &str = "elastic_group_node_memory";
 const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
 const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
 const EVENT: &str = "event";
@@ -61,6 +62,7 @@ const INFERENCE_REQUEST: &str = "inference_request";
 const INFERENCE_RETRY: &str = "inference_retry";
 const INFERENCE_RESULT: &str = "inference_result";
 const SESSION_WAIT: &str = "session_wait";
+const CAPACITY_SHORTFALL: &str = "capacity_shortfall";
 const SESSION_WAIT_DUE: &str = "session_wait_due";
 const INFLIGHT: &str = "inflight";
 const LEASE: &str = "lease";
@@ -353,6 +355,11 @@ impl<'a> Keys<'a> {
     pub(crate) fn inference_input_space(&self) -> Subspace {
         self.root.subspace(&(INFERENCE_INPUT,))
     }
+    pub(crate) fn capacity_shortfall(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .subspace(&(CAPACITY_SHORTFALL,))
+            .pack(&(id.as_ulid().to_bytes().to_vec(),))
+    }
     pub(crate) fn session_wait(&self, id: SessionId) -> Vec<u8> {
         self.session_wait_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -575,6 +582,11 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn provisioner_sequence(&self) -> Vec<u8> {
         self.root.subspace(&(PROVISIONER_SEQUENCE,)).pack(&())
+    }
+    pub(crate) fn elastic_group_node_memory(&self, group: &str) -> Vec<u8> {
+        self.root
+            .subspace(&(ELASTIC_GROUP_NODE_MEMORY,))
+            .pack(&(group,))
     }
     pub(crate) fn elastic_group(&self, group: &str) -> Vec<u8> {
         self.elastic_group_space().pack(&(group,))

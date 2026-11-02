@@ -2,7 +2,10 @@
 //! Only desired is written here; reconcile applies it with creation and drain limits.
 use jiff::Timestamp;
 use std::time::Duration;
-use swarmy_core::{ElasticGroupRecord, GpuRequirement, MachineCause, MachineState};
+use swarmy_core::{
+    ElasticGroupRecord, GpuRequirement, MachineCause, MachineOffer, MachineState,
+    SandboxRequirements,
+};
 use swarmy_store::{GpuCapacityWait, MachineFilter, Store};
 
 /// Time a joined machine must have no GPU computer before removal.
@@ -161,6 +164,27 @@ fn manual_scale_pending(group: &ElasticGroupRecord) -> bool {
         && group.desired_cause.agent.is_none()
         && !group.desired_cause.reason.starts_with(LOWERED)
 }
+/// Filter waits that cannot fit an empty machine before counting demand.
+pub(crate) fn fitting(
+    node_memory_mib: Option<u64>,
+    waits: &[GpuCapacityWait],
+) -> (Vec<GpuCapacityWait>, usize) {
+    let (fits, unfit): (Vec<_>, Vec<_>) = waits.iter().cloned().partition(|wait| {
+        node_memory_mib.is_none_or(|memory_mib| {
+            swarmy_core::machine_holds(
+                MachineOffer {
+                    memory_mib,
+                    cards: true,
+                },
+                SandboxRequirements {
+                    memory_mib: wait.memory_mib,
+                    gpu: wait.requirement,
+                },
+            )
+        })
+    });
+    (fits, unfit.len())
+}
 /// Read demand and load, then adjust the sole autoscaled group's desired.
 /// # Errors
 /// Store failures.
@@ -176,11 +200,14 @@ pub async fn run(store: &Store) -> anyhow::Result<Option<Decision>> {
     if groups.next().is_some() {
         tracing::warn!("multiple autoscaled groups; using the first");
     }
-    let waits = store.gpu_capacity_waits().await?;
+    let size = store
+        .elastic_group_node_memory(&record.definition.group)
+        .await?;
+    let (waits, unfit) = fitting(size, &store.gpu_capacity_waits().await?);
     let machines = load(store, &record).await?;
     let demand = Demand::from_load(record.definition.sandboxes, &machines, &waits);
     let decision = decide_with_demand(&record, &machines, &waits, store.now(), demand);
-    apply_decision(store, &record, &decision, demand).await?;
+    apply_decision(store, &record, &decision, demand, unfit, size).await?;
     Ok(Some(decision))
 }
 async fn apply_decision(
@@ -188,6 +215,8 @@ async fn apply_decision(
     record: &ElasticGroupRecord,
     decision: &Decision,
     demand: Demand,
+    unfit: usize,
+    size: Option<u64>,
 ) -> anyhow::Result<()> {
     let unmet = demand.unmet;
     let placed_waits = demand.placed;
@@ -196,6 +225,20 @@ async fn apply_decision(
     let max = record.definition.max;
     let capped = needed > max;
     let group = &record.definition.group;
+    if unfit > 0 {
+        tracing::warn!(
+            group,
+            unfit,
+            node_memory_mib = size,
+            "autoscale: waiting computers need more memory than one machine of the group offers; no machine is bought for them"
+        );
+    }
+    if size.is_none() {
+        tracing::warn!(
+            group,
+            "autoscale: group has no node_memory_mib; every GPU wait counts. Add node_memory_mib to the group in the swarm spec and run swarmy swarm scale"
+        );
+    }
     match &decision {
         Decision::Raise { desired, cause } | Decision::Lower { desired, cause } => {
             store.set_elastic_desired(group, *desired, cause).await?;
@@ -204,10 +247,10 @@ async fn apply_decision(
             } else {
                 "autoscale lowered desired"
             };
-            tracing::info!(group, from = record.desired, to = desired, waiting = unmet, placed_waits, busy, max, capped, reason = %cause.reason, "{message}");
+            tracing::info!(group, from = record.desired, to = desired, waiting = unmet, unfit, placed_waits, busy, max, capped, reason = %cause.reason, "{message}");
         }
         Decision::Keep => {
-            tracing::debug!(group, from = record.desired, to = record.desired, waiting = unmet, placed_waits, busy, max, capped, reason = %record.desired_cause.reason, "autoscale kept desired");
+            tracing::debug!(group, from = record.desired, to = record.desired, waiting = unmet, unfit, placed_waits, busy, max, capped, reason = %record.desired_cause.reason, "autoscale kept desired");
         }
     }
     Ok(())
@@ -321,6 +364,7 @@ mod tests {
             agent_id: AgentId::from_ulid(Ulid::generate()),
             agent_name: Some("w1".into()),
             requirement,
+            memory_mib: 768,
             since: at(0),
             gpu_request: None,
             placed: false,

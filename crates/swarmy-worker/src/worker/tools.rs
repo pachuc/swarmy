@@ -325,6 +325,7 @@ impl Worker {
                             live_events,
                             &dispatch,
                             no_room.requirement,
+                            no_room.shortfall,
                         )
                         .await;
                 }
@@ -383,6 +384,7 @@ impl Worker {
         events: &mut Vec<Event>,
         dispatch: &Dispatch<'_>,
         requirement: GpuRequirement,
+        shortfall: Option<swarmy_core::Shortfall>,
     ) -> Result<DispatchOutcome> {
         let id = session.session_id;
         let mut token = lease.lock().await;
@@ -392,6 +394,7 @@ impl Worker {
                 id,
                 token.as_ref().context("lease released")?,
                 requirement,
+                shortfall,
                 self.now(),
                 self.config.max_session_wait,
             )
@@ -406,13 +409,16 @@ impl Worker {
                         .await?;
                     events.push(*event);
                 }
-                tracing::info!(session_id = %id, ?requirement, "no node can host the computer; waiting for capacity");
+                tracing::info!(session_id = %id, ?requirement, ?shortfall, "no node can host the computer; waiting for capacity");
                 Ok(DispatchOutcome::Parked)
             }
             CapacityPark::Expired => {
                 drop(token);
-                let error =
-                    swarmy_core::capacity_wait_exceeded(requirement, self.config.max_session_wait);
+                let error = swarmy_core::capacity_wait_exceeded(
+                    requirement,
+                    shortfall,
+                    self.config.max_session_wait,
+                );
                 self.fail_dispatch(session, lease, events, dispatch, &error)
                     .await?;
                 Ok(DispatchOutcome::Failed)
