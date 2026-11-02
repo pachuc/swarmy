@@ -1523,7 +1523,12 @@ async fn an_oversized_computer_parks_with_a_memory_shortfall() {
         )
         .await
         .unwrap();
-    let id = f.session().await;
+    let id = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(id, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(id).await;
     f.step(id).await;
     let (wait, shortfall) = f.store.session_wait_detail(id).await.unwrap().unwrap();
     assert_eq!(wait.capacity(), Some(GpuRequirement::None));
