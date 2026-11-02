@@ -225,20 +225,7 @@ async fn apply_decision(
     let max = record.definition.max;
     let capped = needed > max;
     let group = &record.definition.group;
-    if unfit > 0 {
-        tracing::warn!(
-            group,
-            unfit,
-            node_memory_mib = size,
-            "autoscale: waiting computers need more memory than one machine of the group offers; no machine is bought for them"
-        );
-    }
-    if size.is_none() {
-        tracing::warn!(
-            group,
-            "autoscale: group has no node_memory_mib; every GPU wait counts. Add node_memory_mib to the group in the swarm spec and run swarmy swarm scale"
-        );
-    }
+    warn_on_size(group, unfit, size);
     match &decision {
         Decision::Raise { desired, cause } | Decision::Lower { desired, cause } => {
             store.set_elastic_desired(group, *desired, cause).await?;
@@ -254,6 +241,23 @@ async fn apply_decision(
         }
     }
     Ok(())
+}
+/// Keep size-configuration warnings separate from the desired-count decision log.
+fn warn_on_size(group: &str, unfit: usize, size: Option<u64>) {
+    if unfit > 0 {
+        tracing::warn!(
+            group,
+            unfit,
+            node_memory_mib = size,
+            "autoscale: waiting computers need more memory than one machine of the group offers; no machine is bought for them"
+        );
+    }
+    if size.is_none() {
+        tracing::warn!(
+            group,
+            "autoscale: group has no node_memory_mib; every GPU wait counts. Add node_memory_mib to the group in the swarm spec and run swarmy swarm scale"
+        );
+    }
 }
 async fn load(store: &Store, group: &ElasticGroupRecord) -> anyhow::Result<Vec<MachineLoad>> {
     let mut loads = Vec::new();
