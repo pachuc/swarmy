@@ -3037,6 +3037,56 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
 mod timers;
 
 #[tokio::test]
+async fn a_capacity_park_keeps_its_shortfall_until_the_wait_clears() {
+    use swarmy_core::{GpuRequirement, Shortfall};
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    let shortfall = Shortfall {
+        needed_mib: 24576,
+        largest_mib: 12288,
+    };
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            Some(shortfall),
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let (wait, stored) = f.store.session_wait_detail(id).await.unwrap().unwrap();
+    assert_eq!(stored, Some(shortfall));
+    assert!(wait.reasons(stored)[0].contains("MiB of memory"));
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            None,
+            timestamp(140),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store.session_wait_detail(id).await.unwrap().unwrap().1,
+        None
+    );
+}
+
+#[tokio::test]
 async fn capacity_park_releases_the_lease_and_notices_once() {
     use swarmy_core::GpuRequirement;
     use swarmy_store::{CAPACITY_WAIT_RETRY, CapacityPark, WaitKind};

@@ -566,6 +566,25 @@ nodes = ["box"]
         assert_eq!(group.machines(), 0);
         assert_eq!(group.hourly_price().unwrap().amount(), "0.75");
         assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        spec.groups.get_mut("workers").unwrap().node_memory_mib = Some(12288);
+        assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        spec.groups.get_mut("workers").unwrap().node_memory_mib = Some(0);
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("node_memory_mib must be at least 1")
+        );
+        spec.groups.get_mut("workers").unwrap().node_memory_mib = None;
+        let mut bad = SwarmSpec::parse(CLOUD).unwrap();
+        bad.groups.get_mut("workers").unwrap().node_memory_mib = Some(12288);
+        assert!(
+            bad.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("node_memory_mib applies only to elastic groups")
+        );
+
         let mut non_elastic = SwarmSpec::parse(CLOUD).unwrap();
         non_elastic.groups.get_mut("workers").unwrap().autoscale = true;
         assert!(

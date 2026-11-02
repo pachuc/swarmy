@@ -341,9 +341,30 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
     let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
     let client = reqwest::Client::new();
     let mut body = group_body("autoscale-first");
+    let mut missing = group_body("autoscale-missing");
+    missing.autoscale = true;
+    let first = format!("{base}/gpu");
+    let rejected = client
+        .put(&first)
+        .bearer_auth("test-token")
+        .json(&missing)
+        .send()
+        .await
+        .unwrap();
+    let failure = assert_api_error(rejected, 400, "invalid_elastic_group").await;
+    assert!(failure.to_string().contains("node_memory_mib"));
+    assert_eq!(
+        client
+            .get(&first)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
     body.autoscale = true;
     body.node_memory_mib = Some(12288);
-    let first = format!("{base}/gpu");
     assert!(
         client
             .put(&first)
@@ -355,6 +376,24 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
             .status()
             .is_success()
     );
+    let mut update = group_body("autoscale-update");
+    update.autoscale = true;
+    let response = client
+        .put(&first)
+        .bearer_auth("test-token")
+        .json(&update)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(
+        response
+            .json::<ElasticGroup>()
+            .await
+            .unwrap()
+            .node_memory_mib,
+        Some(12288)
+    );
     let registered: ElasticGroup = client
         .get(&first)
         .bearer_auth("test-token")
@@ -364,6 +403,7 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
         .json()
         .await
         .unwrap();
+    assert_eq!(registered.node_memory_mib, Some(12288));
     assert!(registered.autoscale);
     body.idempotency_key = "autoscale-second".into();
     assert_api_error(
