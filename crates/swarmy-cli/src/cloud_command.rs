@@ -99,6 +99,11 @@ fn read_secrets(provider: CloudProvider) -> anyhow::Result<Vec<String>> {
     } else {
         let mut text = String::new();
         io::stdin().read_to_string(&mut text)?;
+        if text.is_empty() {
+            bail!(
+                "no terminal for a hidden prompt and nothing on stdin; run this in a terminal, or pipe the secret in, for example: printf '%s\\n' \"$TOKEN\" | swarmy cloud login hetzner-cloud"
+            );
+        }
         split_stdin(&text, provider)
     }
 }

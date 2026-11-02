@@ -51,6 +51,27 @@ fn login(f: &Fixture, provider: &str, input: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+#[test]
+fn cloud_login_without_terminal_or_stdin_explains_how_to_supply_secret() {
+    let f = Fixture::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .env_clear()
+        .env("HOME", f.path().join("home"))
+        .env("XDG_CONFIG_HOME", f.path().join("config"))
+        .env("XDG_DATA_HOME", f.path().join("data"))
+        .env("XDG_STATE_HOME", f.path().join("state"))
+        .env("XDG_CACHE_HOME", f.path().join("cache"))
+        .args(["cloud", "login", "hetzner-cloud"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no terminal for a hidden prompt and nothing on stdin"));
+    assert!(stderr.contains("printf '%s\\n' \"$TOKEN\" | swarmy cloud login hetzner-cloud"));
+}
+
 fn create(f: &Fixture, lifecycle: &[&str]) {
     let mut args = vec![
         "swarm",
