@@ -288,6 +288,20 @@ mod tests {
         nodes.iter().map(|node| node.node_id).collect()
     }
     #[test]
+    fn a_node_too_small_for_the_computer_is_not_a_candidate() {
+        let mut nodes = vec![node(1, true)];
+        order_candidates(
+            &mut nodes,
+            SandboxRequirements {
+                memory_mib: 2048,
+                gpu: GpuRequirement::Shared,
+            },
+            None,
+            None,
+        );
+        assert!(nodes.is_empty());
+    }
+    #[test]
     fn cpu_work_tries_card_nodes_last() {
         let mut nodes = vec![node(1, true), node(2, false)];
         order_candidates(&mut nodes, needs(GpuRequirement::None), None, None);
@@ -352,7 +366,7 @@ mod tests {
             expires_at: Timestamp::UNIX_EPOCH,
             last_change_reason: swarmy_core::PlacementChangeReason::Initial,
             last_changed_at: Timestamp::UNIX_EPOCH,
-            gpu: needs(GpuRequirement::Shared),
+            gpu: GpuRequirement::Shared,
         };
         let mut nodes = vec![node(2, true), node(3, true)];
         order_candidates(

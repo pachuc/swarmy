@@ -370,6 +370,39 @@ mod tests {
             placed: false,
         }
     }
+    #[test]
+    fn fitting_counts_waits_too_large_for_the_machine() {
+        let small = wait(GpuRequirement::Shared);
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        let (fits, unfit) = fitting(Some(12288), &[small.clone(), big.clone()]);
+        assert_eq!(fits, vec![small.clone()]);
+        assert_eq!(unfit, 1);
+        let (fits, unfit) = fitting(None, &[small, big]);
+        assert_eq!(fits.len(), 2);
+        assert_eq!(unfit, 0);
+    }
+    #[test]
+    fn a_wait_larger_than_the_machine_buys_nothing() {
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        assert_eq!(
+            decide(&group(0, 1, 1), &[], &fitting(Some(12288), &[big]).0, at(0)),
+            Decision::Keep
+        );
+    }
+    #[test]
+    fn only_waits_that_fit_raise_and_name_the_cause() {
+        let mut big = wait(GpuRequirement::Shared);
+        big.memory_mib = 24576;
+        let small = wait(GpuRequirement::Shared);
+        let (fits, _) = fitting(Some(12288), &[big, small.clone()]);
+        let Decision::Raise { desired, cause } = decide(&group(0, 1, 1), &[], &fits, at(0)) else {
+            panic!("fitting wait must raise desired");
+        };
+        assert_eq!(desired, 1);
+        assert_eq!(cause.agent, Some(small.agent_id));
+    }
     fn machine(
         number: u32,
         state: MachineState,

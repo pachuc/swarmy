@@ -1790,6 +1790,7 @@ async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
             id_a,
             &lease_a,
             swarmy_core::GpuRequirement::Shared,
+            None,
             Timestamp::now(),
             Duration::from_hours(1),
         )
@@ -1801,6 +1802,7 @@ async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
             id_b,
             &lease_b,
             swarmy_core::GpuRequirement::None,
+            None,
             Timestamp::now(),
             Duration::from_hours(1),
         )

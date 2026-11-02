@@ -99,6 +99,11 @@ same card; `dedicated` keeps the machine to this worker. A new worker is created
 with the requirement; a reused idle worker is set to it before the task starts.
 Either way the agent carries the reason `tasky <FULL_ID>: launched with --gpu`, so a machine the autoscaler starts for it names the task.
 
+Set `gpu_memory_mib` in fleet.toml to the GPU group's `node_memory_mib`.
+New workers launched with GPU access are capped at that memory. A larger existing
+worker cannot move to a GPU machine; the driver refuses before changing it.
+Run `fleet reset worker-N` to recreate it at the GPU size on its next GPU launch.
+
 `--allow-gpu` lets the worker decide when to call `request_gpu` and
 `release_gpu`. Its prompt says to request only for steps that need the card,
 push work before moving, and start the reason with `tasky <FULL_ID>: `.

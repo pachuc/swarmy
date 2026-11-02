@@ -358,7 +358,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn capacity_shortfall(&self, id: SessionId) -> Vec<u8> {
         self.root
             .subspace(&(CAPACITY_SHORTFALL,))
-            .pack(&(id.as_ulid().to_bytes().to_vec(),))
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
     pub(crate) fn session_wait(&self, id: SessionId) -> Vec<u8> {
         self.session_wait_space()

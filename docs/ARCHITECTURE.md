@@ -81,7 +81,7 @@ Normal dependency edges from `swarmyd`, `swarmy-volume` and `swarmy-sandbox` to 
   ([source](../crates/swarmy-devtools/src/main.rs)).
 - **swarmy-cloud** provisions SSH-reachable hosts as swarms, upgrades them, opens per-swarm tunnels, and, with the opt-in remote feature, manages a static-key bucket; the provisioner is its only server-side user
   ([source](../crates/swarmy-cloud/src/lib.rs)).
-- **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger, autoscales the one group with `autoscale = true` from parked GPU capacity waits (`session_wait` rows) and idle machines by changing desired only, and joins, drains and destroys machines through the client's SSH path ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
+- **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger, autoscales the one group with `autoscale = true` from parked GPU capacity waits (`session_wait` rows) whose memory fits the group's recorded `node_memory_mib`, and idle machines by changing desired only, and joins, drains and destroys machines through the client's SSH path ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
 - **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
 
 Control-plane services share a bootstrap from `swarmy-config`: `Settings::load`
@@ -179,11 +179,11 @@ them in [api-breaks.txt](api-breaks.txt).
   [services.rs](../crates/swarmy-store/src/services.rs),
   [tool_routing.rs](../crates/swarmy-store/src/tool_routing.rs),
   [placed_tools.rs](../crates/swarmy-store/src/placed_tools.rs)).
-- **Elastic groups.** `elastic_group` holds the swarm-owned definition, desired count, and reconciliation generations; `elastic_creations` holds the creation safety window, while `provisioner_lease` and `provisioner_sequence` fence the single primary provisioner ([elastic.rs](../crates/swarmy-store/src/elastic.rs)).
+- **Elastic groups.** `elastic_group_node_memory` holds the group's declared usable memory; `elastic_group` holds the swarm-owned definition, desired count, and reconciliation generations; `elastic_creations` holds the creation safety window, while `provisioner_lease` and `provisioner_sequence` fence the single primary provisioner ([elastic.rs](../crates/swarmy-store/src/elastic.rs)).
 - **Machine ledger.** `machine`, `machine_by_group`, `machine_assignment`, `machine_assignment_by_agent`, and `machine_assignment_open` record elastic machine lifecycle and agent intervals. A joined machine's node id equals its machine id ULID; GPU placement transactions find the machine with one point read and open or close assignment intervals ([machines.rs](../crates/swarmy-store/src/machines.rs), [placements.rs](../crates/swarmy-store/src/placements.rs)).
 - **Inference, routes, and credentials.** `route`, `credential_entry`,
   `credential_entry_lease`, `inference_request`, `inference_claim`,
-  `inference_result`, `inference_breaker`, and the shared `session_wait` connect
+  `inference_result`, `inference_breaker`, and the shared `session_wait` (with separate `capacity_shortfall` rows) connect
   named failover chains over auth entries, fenced refresh of encrypted
   credential records (including the machine-provider kind used by OpenTofu), provider availability advertisements, and retryable
   waits

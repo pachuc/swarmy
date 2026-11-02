@@ -70,6 +70,9 @@ def load():
     data.setdefault("allow_gpu", False)
     if not isinstance(data["allow_gpu"], bool):
         raise RuntimeError(f"{CONFIG}: allow_gpu must be true or false")
+    limit = data.get("gpu_memory_mib")
+    if limit is not None and (type(limit) is not int or limit <= 0):
+        raise RuntimeError(f"{CONFIG}: gpu_memory_mib must be a positive whole number of MiB")
     return data
 
 
@@ -272,11 +275,29 @@ def set_worker_gpu(config, name, gpu, allow, reason):
     return True
 
 
+def worker_memory(config, gpu, allow):
+    """Cap a new GPU worker to the memory its GPU machine can offer."""
+    memory = config.get("memory_mib", 6144)
+    limit = config.get("gpu_memory_mib")
+    return min(memory, limit) if limit is not None and (gpu != "none" or allow) else memory
+
+
+def check_gpu_fit(config, name, gpu, allow):
+    """A placed worker cannot shrink, so refuse a GPU move that cannot fit."""
+    limit = config.get("gpu_memory_mib")
+    if limit is None or (gpu == "none" and not allow):
+        return
+    detail = one(command(swarmy(config, "agent", "show", name, "--json")))
+    memory = (detail.get("requirements") or {}).get("memory_mib")
+    if memory is not None and memory > limit:
+        raise RuntimeError(f"{name} needs {memory} MiB, more than the {limit} MiB a GPU machine offers (gpu_memory_mib in {CONFIG}); run fleet reset {name} so the next GPU launch recreates it at {limit} MiB, or pick another worker with --worker")
+
+
 def create_worker(name, config, selection, image, gpu, allow, reason):
     extra = ["--image", image] if image else []
     # A worker builds the workspace; the sandbox default of 768 MiB would be
     # enforced as a cgroup limit and kill cargo.
-    extra += ["--memory", str(config.get("memory_mib", 6144))]
+    extra += ["--memory", str(worker_memory(config, gpu, allow))]
     extra += gpu_args(gpu, allow, reason)
     command(swarmy(config, "agent", "create", name, *extra, "--description", "fleet worker",
                    *selection, "--github-token-stdin"), input=config["github_token"] + "\n")
@@ -354,10 +375,12 @@ def launch(args, config):
         if workers[args.worker]:
             raise RuntimeError(f"{args.worker} still holds {workers[args.worker]}; release it first")
         worker = args.worker
+        check_gpu_fit(config, worker, gpu, allow_gpu)
         set_worker_gpu(config, worker, gpu, allow_gpu, gpu_reason)
     else:
         worker, workers, created = pick_worker(config, selection, image, provider, model, gpu, allow_gpu, gpu_reason)
         if not created:
+            check_gpu_fit(config, worker, gpu, allow_gpu)
             set_worker_gpu(config, worker, gpu, allow_gpu, gpu_reason)
     log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

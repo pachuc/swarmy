@@ -586,6 +586,7 @@ fn autoscale_off_request(
         external_bucket: record.external_bucket,
         network_id: record.network_id.clone(),
         image: record.image.clone(),
+        node_memory_mib: None,
     }
 }
 fn not_up(spec: &SwarmSpec) -> anyhow::Error {
@@ -819,6 +820,7 @@ nodes = ["gpu"]
             external_bucket: true,
             network_id: "4711".into(),
             image: Some("ubuntu-24.04".into()),
+            node_memory_mib: None,
         };
         group.autoscale = true;
         group.desired = 1;

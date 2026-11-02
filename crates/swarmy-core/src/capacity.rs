@@ -121,6 +121,86 @@ pub fn capacity_wait_exceeded(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    fn needs(memory_mib: u64, gpu: GpuRequirement) -> SandboxRequirements {
+        SandboxRequirements { memory_mib, gpu }
+    }
+    #[test]
+    fn a_machine_holds_a_computer_that_fits_its_memory_and_card() {
+        let card = MachineOffer {
+            memory_mib: 12288,
+            cards: true,
+        };
+        assert!(machine_holds(card, needs(12288, GpuRequirement::Shared)));
+        assert!(!machine_holds(card, needs(12289, GpuRequirement::Shared)));
+        assert!(!machine_holds(
+            MachineOffer {
+                cards: false,
+                ..card
+            },
+            needs(768, GpuRequirement::Dedicated)
+        ));
+        assert!(machine_holds(card, needs(768, GpuRequirement::None)));
+    }
+    #[test]
+    fn shortfall_names_the_largest_machine_that_could_take_it() {
+        let offers = [
+            MachineOffer {
+                memory_mib: 64000,
+                cards: false,
+            },
+            MachineOffer {
+                memory_mib: 12288,
+                cards: true,
+            },
+        ];
+        assert_eq!(
+            shortfall(&offers, needs(24576, GpuRequirement::Shared)),
+            Some(Shortfall {
+                needed_mib: 24576,
+                largest_mib: 12288
+            })
+        );
+        assert_eq!(
+            shortfall(&offers, needs(8192, GpuRequirement::Shared)),
+            None
+        );
+        assert_eq!(shortfall(&offers, needs(24576, GpuRequirement::None)), None);
+        assert_eq!(
+            shortfall(&offers[..1], needs(24576, GpuRequirement::Shared)),
+            None
+        );
+        assert_eq!(shortfall(&[], needs(24576, GpuRequirement::Shared)), None);
+    }
+    #[test]
+    fn gpu_wait_texts_name_the_memory_shortfall() {
+        let s = Some(Shortfall {
+            needed_mib: 24576,
+            largest_mib: 12288,
+        });
+        let wait = Duration::from_secs(10);
+        for text in [
+            capacity_wait_reason(GpuRequirement::Shared, s),
+            capacity_wait_notice(GpuRequirement::Shared, s, wait),
+            capacity_wait_exceeded(GpuRequirement::Shared, s, wait),
+        ] {
+            assert!(
+                text.contains("24576 MiB")
+                    && text.contains("12288 MiB")
+                    && text.contains("--memory")
+            );
+            assert!(!text.contains("change the agent's GPU requirement"));
+        }
+    }
+    #[test]
+    fn shortfall_has_fixed_bytes() {
+        let value = Shortfall {
+            needed_mib: 24576,
+            largest_mib: 12288,
+        };
+        let bytes = crate::encode(&value).unwrap();
+        assert_eq!(bytes, [1, 128, 192, 1, 128, 96]);
+        assert_eq!(crate::decode::<Shortfall>(&bytes).unwrap(), value);
+    }
     #[test]
     fn gpu_wait_texts_say_waiting_for_gpu_capacity() {
         let wait = Duration::from_secs(3600);

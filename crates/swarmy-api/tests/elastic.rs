@@ -55,6 +55,7 @@ fn group_body(key: &str) -> PutElasticGroup {
         external_bucket: true,
         network_id: "4711".into(),
         image: Some("ubuntu-24.04".into()),
+        node_memory_mib: None,
     }
 }
 
@@ -341,6 +342,7 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
     let client = reqwest::Client::new();
     let mut body = group_body("autoscale-first");
     body.autoscale = true;
+    body.node_memory_mib = Some(12288);
     let first = format!("{base}/gpu");
     assert!(
         client
