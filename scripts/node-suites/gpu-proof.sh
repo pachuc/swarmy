@@ -63,7 +63,7 @@ elif mode == 'summary':
 else:
     raise ValueError(f'unknown GPU check helper: {mode}')
 PY
-gpu_py() { python3 -E -c "${CHECK_PY%%mode, *}$GPU_PY" "$@"; }
+gpu_py() { python3 -E -c "${CHECK_PY%%if mode*}$GPU_PY" "$@"; }
 gpu_usage() { echo 'usage: gpu-proof.sh --swarm NAME --provider ID --model ID --image NAME:TAG [--effort LEVEL] [--gpu shared|dedicated] [--memory MIB] [--output DIR] [--keep-agent] [--swarmy PATH] [--dry-run]'; }
 gpu_parse_args() {
     swarm= provider= model= effort= image= output= gpu=shared memory=4096 keep_agent=0 dry_run=0 swarmy=swarmy

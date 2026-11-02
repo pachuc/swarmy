@@ -42,4 +42,14 @@ sed '1s/nvidia/software/' "$tmp/probe" > "$tmp/invalid"
 if gpu_py probe "$tmp/invalid" >/dev/null 2>&1; then exit 1; fi
 sed '5s/352/0/' "$tmp/probe" > "$tmp/invalid"
 if gpu_py probe "$tmp/invalid" >/dev/null 2>&1; then exit 1; fi
+cat > "$tmp/windows.jsonl" <<'JSON'
+{"session_id":"s"}
+{"tool_call_requested":{"seq":2,"call":{"call_id":"windows","tool":"screen_windows","arguments":{}}}}
+{"tool_call_completed":{"seq":3,"call_id":"windows","result":{"completed":{"output":"[{\"title\":\"glxgears\"}]"}}}}
+{"tool_call_requested":{"seq":4,"call":{"call_id":"shot","tool":"screen_screenshot","arguments":{}}}}
+{"tool_call_completed":{"seq":5,"call_id":"shot","result":{"completed":{"metadata":{"image_object_key":"test","image_media_type":"image/png"}}}}}
+JSON
+gpu_py windows "$tmp/windows.jsonl" 1
+sed 's/glxgears/other-window/' "$tmp/windows.jsonl" > "$tmp/invalid-windows.jsonl"
+if gpu_py windows "$tmp/invalid-windows.jsonl" 1 >/dev/null 2>&1; then exit 1; fi
 printf 'gpu-proof: ok\n'
