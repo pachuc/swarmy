@@ -1312,7 +1312,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[inference]\nmax_wait_secs = 30\n").unwrap();
-        let error = Settings::read(&path).unwrap_err().to_string();
+        let error = Settings::read(&path).err().unwrap().to_string();
         assert!(error.contains(&path.display().to_string()));
         assert!(error.contains("[inference] max_wait_secs was removed"));
         assert!(error.contains("[scheduler] max_session_wait_secs"));
@@ -1323,7 +1323,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[api]\nbogus = 1\n").unwrap();
-        let error = Settings::read(&path).unwrap_err().to_string();
+        let error = Settings::read(&path).err().unwrap().to_string();
         assert!(error.contains(&path.display().to_string()));
         assert!(error.contains("bogus"));
     }
