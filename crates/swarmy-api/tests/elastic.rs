@@ -320,26 +320,7 @@ async fn put_rejects_bad_primary_address_and_service_user(client: &reqwest::Clie
     .await;
 }
 
-#[tokio::test]
-async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
-    let Some(stack) = swarmy_testkit::Stack::load("api-elastic-autoscale") else {
-        return;
-    };
-    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
-    let bus = Bus::connect(&stack.nats_url, Config::default())
-        .await
-        .unwrap();
-    let state = AppState::new(
-        store,
-        bus,
-        "test-token".into(),
-        swarmy_llm::catalog::Catalog::get().clone(),
-        Arc::new(object_store::memory::InMemory::new()),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1/swarm/groups", listener.local_addr().unwrap());
-    let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
-    let client = reqwest::Client::new();
+async fn register_autoscale_with_size(client: &reqwest::Client, base: &str) -> ElasticGroup {
     let mut body = group_body("autoscale-first");
     let mut missing = group_body("autoscale-missing");
     missing.autoscale = true;
@@ -405,6 +386,34 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
         .unwrap();
     assert_eq!(registered.node_memory_mib, Some(12288));
     assert!(registered.autoscale);
+    registered
+}
+
+#[tokio::test]
+async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
+    let Some(stack) = swarmy_testkit::Stack::load("api-elastic-autoscale") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    let bus = Bus::connect(&stack.nats_url, Config::default())
+        .await
+        .unwrap();
+    let state = AppState::new(
+        store,
+        bus,
+        "test-token".into(),
+        swarmy_llm::catalog::Catalog::get().clone(),
+        Arc::new(object_store::memory::InMemory::new()),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1/swarm/groups", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
+    let client = reqwest::Client::new();
+    let registered = register_autoscale_with_size(&client, &base).await;
+    assert!(registered.autoscale);
+    let mut body = group_body("autoscale-second");
+    body.autoscale = true;
+    body.node_memory_mib = Some(12288);
     body.idempotency_key = "autoscale-second".into();
     assert_api_error(
         client
