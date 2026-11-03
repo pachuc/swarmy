@@ -99,8 +99,27 @@ fn read_secrets(provider: CloudProvider) -> anyhow::Result<Vec<String>> {
     } else {
         let mut text = String::new();
         io::stdin().read_to_string(&mut text)?;
+        if text.is_empty() {
+            bail!(
+                "no terminal for a hidden prompt and nothing on stdin; run this in a terminal, or pipe the secrets in, one per line, for example: {}",
+                stdin_example(provider)
+            );
+        }
         split_stdin(&text, provider)
     }
+}
+
+/// A shell line that pipes this provider's secrets in, one per line, in the
+/// order `split_stdin` expects, named after the provider's environment variables.
+fn stdin_example(provider: CloudProvider) -> String {
+    let (names, _) = provider.env_names();
+    let formats = vec!["%s"; names.len()].join("\\n");
+    let values: Vec<String> = names.iter().map(|name| format!("\"${name}\"")).collect();
+    format!(
+        "printf '{formats}\\n' {} | swarmy cloud login {}",
+        values.join(" "),
+        provider.name()
+    )
 }
 
 fn split_stdin(text: &str, provider: CloudProvider) -> anyhow::Result<Vec<String>> {
