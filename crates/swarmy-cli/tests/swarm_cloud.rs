@@ -51,25 +51,40 @@ fn login(f: &Fixture, provider: &str, input: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
-#[test]
-fn cloud_login_without_terminal_or_stdin_explains_how_to_supply_secret() {
+/// Run `swarmy cloud login PROVIDER` with no terminal and empty stdin.
+fn login_without_input(provider: &str) -> std::process::Output {
     let root = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+    Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .env_clear()
         .env("HOME", root.path().join("home"))
         .env("XDG_CONFIG_HOME", root.path().join("config"))
         .env("XDG_DATA_HOME", root.path().join("data"))
         .env("XDG_STATE_HOME", root.path().join("state"))
         .env("XDG_CACHE_HOME", root.path().join("cache"))
-        .args(["cloud", "login", "hetzner-cloud"])
+        .args(["cloud", "login", provider])
         .stdin(Stdio::null())
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+fn cloud_login_without_terminal_or_stdin_explains_how_to_supply_secret() {
+    let output = login_without_input("hetzner-cloud");
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no terminal for a hidden prompt and nothing on stdin"));
-    assert!(stderr.contains("printf '%s\\n' \"$TOKEN\" | swarmy cloud login hetzner-cloud"));
+    assert!(stderr.contains("printf '%s\\n' \"$HCLOUD_TOKEN\" | swarmy cloud login hetzner-cloud"));
+}
+
+#[test]
+fn cloud_login_example_lists_every_secret_of_the_provider() {
+    let output = login_without_input("aws");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "printf '%s\\n%s\\n' \"$AWS_ACCESS_KEY_ID\" \"$AWS_SECRET_ACCESS_KEY\" | swarmy cloud login aws"
+    ));
 }
 
 fn create(f: &Fixture, lifecycle: &[&str]) {
