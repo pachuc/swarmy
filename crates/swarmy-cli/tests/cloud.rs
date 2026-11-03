@@ -177,7 +177,7 @@ fn wrong_flags_and_input_are_refused() {
         (
             vec!["cloud", "login", "hetzner-cloud"],
             "",
-            "expected 1 lines",
+            "nothing on stdin",
         ),
         (
             vec!["cloud", "login", "hetzner-cloud", "--token", "x"],
