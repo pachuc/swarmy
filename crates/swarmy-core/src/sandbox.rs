@@ -9,6 +9,14 @@ pub enum GpuRequirement {
     Dedicated,
 }
 
+impl GpuRequirement {
+    /// Whether placement needs a node with at least one card.
+    #[must_use]
+    pub const fn needs_card(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRequirements {
     pub memory_mib: u64,
@@ -26,7 +34,7 @@ impl Default for SandboxRequirements {
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub agent_id: AgentId,
     #[serde(default)]

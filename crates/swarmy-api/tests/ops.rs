@@ -3,9 +3,9 @@
 use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types as api;
-use swarmy_bus::{Bus, Config};
+use swarmy_bus::{Bus, Config, WorkQueue};
 use swarmy_client::Client;
-use swarmy_core::{CHUNK_SIZE, TurnStage};
+use swarmy_core::{CHUNK_SIZE, ImageProbe, TurnStage};
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
@@ -97,6 +97,54 @@ impl Fixture {
             .unwrap();
         id.to_string()
     }
+}
+
+#[tokio::test]
+async fn upload_queues_an_image_probe() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    fixture.bus.setup(&[WorkQueue::ImageProbes]).await.unwrap();
+    let mut messages = fixture
+        .bus
+        .consume::<ImageProbe>(&WorkQueue::ImageProbes)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("disk.ext4");
+    std::fs::File::create(&raw)
+        .unwrap()
+        .set_len(u64::from(CHUNK_SIZE))
+        .unwrap();
+    let tag = Ulid::generate().to_string();
+    let uploaded = fixture
+        .client
+        .upload_image(&swarmy_client::UploadImage {
+            name: "probe-test",
+            tag: &tag,
+            idempotency_key: &Ulid::generate().to_string(),
+            scratch: &[],
+            memory_mib: None,
+            display: false,
+            file: &raw,
+        })
+        .await
+        .unwrap();
+    let manifest = uploaded.manifest_id;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let message = messages.next().await.unwrap().unwrap();
+            let probe = message.value.clone();
+            message.acknowledge().await.unwrap();
+            if probe.manifest.to_string() == manifest {
+                assert_eq!(probe.name, "probe-test");
+                assert_eq!(probe.tag.0, tag);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -629,6 +677,11 @@ async fn doctor_reports_registered_nodes() {
             },
             last_heartbeat: jiff::Timestamp::now(),
             cached_images: Vec::new(),
+            gpu: Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4".into(),
+                memory_mib: 23034,
+                count: 1,
+            }),
         })
         .await
         .unwrap();
@@ -639,5 +692,13 @@ async fn doctor_reports_registered_nodes() {
         .find(|reported| reported.node_id == node.to_string())
         .unwrap();
     assert_eq!(reported.capacity.sandboxes, 4);
+    assert_eq!(
+        reported.gpu,
+        Some(api::GpuCards {
+            model: "NVIDIA L4".into(),
+            memory_mib: 23034,
+            count: 1
+        })
+    );
     assert_eq!(reported.committed_memory_bytes, 0);
 }

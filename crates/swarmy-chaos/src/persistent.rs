@@ -56,13 +56,15 @@ pub(crate) async fn exercise(
         environment.extend([
             ("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()),
             ("SWARMY_SANDBOX_IDLE_SECONDS".into(), "3".into()),
-            (
-                "SWARMY_NODE_ID".into(),
-                NodeId::from_ulid(ulid::Ulid::from_parts(1, index + 1))
-                    .to_string()
-                    .into(),
-            ),
         ]);
+        environment.extend(
+            fixture
+                .node_identity(
+                    NodeId::from_ulid(ulid::Ulid::from_parts(1, index + 1)),
+                    &root,
+                )
+                .await?,
+        );
         nodes.roots.push(root.clone());
         if index == 0
             && let Some(driver) = driver

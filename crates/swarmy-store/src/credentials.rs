@@ -15,7 +15,7 @@ use swarmy_core::{
 };
 
 #[cfg(any(test, feature = "test-support"))]
-use crate::{BreakerCandidate, CredentialKey, inference_wait::Breaker};
+use crate::{BreakerCandidate, CredentialKey, breakers::Breaker};
 use crate::{Result, Store, StoreError, read, scan_all, write};
 use foundationdb::RetryableTransaction;
 
@@ -45,7 +45,7 @@ impl CredentialSummary {
             last_used_at: None,
             expires_at: match record.kind {
                 CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
-                CredentialKind::ApiKey { .. } => None,
+                CredentialKind::ApiKey { .. } | CredentialKind::MachineProvider { .. } => None,
             },
         }
     }
@@ -88,7 +88,7 @@ fn entry_readiness(record: &CredentialRecord, now: Timestamp) -> (bool, Option<T
     let needs_login = record.status(now) == CredentialStatus::NeedsLogin;
     let expires_at = match record.kind {
         CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
-        CredentialKind::ApiKey { .. } => None,
+        CredentialKind::ApiKey { .. } | CredentialKind::MachineProvider { .. } => None,
     };
     (needs_login, expires_at)
 }
@@ -199,8 +199,7 @@ impl Store {
                     if record.open_until > now {
                         Some(record.open_until)
                     } else if record.probe_until.is_some_and(|until| until > now) {
-                        now.checked_add(crate::inference_wait::BREAKER_PROBE_GRACE)
-                            .ok()
+                        now.checked_add(crate::breakers::BREAKER_PROBE_GRACE).ok()
                     } else {
                         None
                     }

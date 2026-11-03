@@ -22,6 +22,11 @@ zero before the first append. `computer_deleted` reports teardown; an optional
 session. A session may reference an agent. An optional session route
 overrides the agent and swarm default for that conversation only.
 
+**Machines** are read-only records of elastic machines with state, lifecycle
+timestamps, cause, price, cost so far, optional window cost, and current agents.
+`GET /v1/machines` accepts `state=active|all` and an optional `from`/`to`
+window. Clients cannot create or edit machines.
+
 **Turns** group inference and tool work within a session. Each has a status,
 start time, and optional finish time.
 

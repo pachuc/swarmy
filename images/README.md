@@ -51,7 +51,8 @@ Paths are relative to the recipe directory. Scripts run in order through
 `/bin/sh -es` inside the installed system before cleanup. See
 [the developer image](base-ubuntu/README.md) for its tools and credential setup,
 [the desktop image](base-desktop/README.md) for its supervised display and
-software renderers. The
+software renderers. `swarmy-dev` carries the same display through
+`images/common/desktop-setup.sh`. The
 optional `source_commit = "..."` must be a full 40-digit Git hash and is passed
 to that script as `SWARMY_SOURCE_COMMIT`; the swarmy-dev recipe uses it to pin
 the checkout that warms Cargo.

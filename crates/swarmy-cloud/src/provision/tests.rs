@@ -132,7 +132,11 @@ impl SwarmHost for FakeHost {
                 .map_err(Error::other)
         })
     }
-    fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> impl Future<Output = Result<()>> {
+    fn revoke_node_access(
+        &self,
+        node: &Machine,
+        primary: &Machine,
+    ) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("revoke {} primary={}", node.name, primary.name));
             Ok(())
@@ -354,6 +358,11 @@ async fn up_provisions_in_order_and_records_the_token() {
             "provision fleet-workers-2 primary=fleet-control-1 bucket=none"
         ]
     );
+    let config: Settings = toml::from_str(&fake.configs()[0]).unwrap();
+    assert_eq!(
+        config.selection.default_image.as_deref(),
+        Some("base-ubuntu:fleet")
+    );
     let record = registry.read_record("fleet").unwrap().unwrap();
     assert!(record.hosts.values().flatten().all(|h| h.provisioned));
     assert_eq!(record.api.token.as_deref(), Some("node-token"));
@@ -366,6 +375,32 @@ async fn up_provisions_in_order_and_records_the_token() {
     }
     assert_eq!(registry.current().unwrap().as_deref(), Some("fleet"));
 }
+#[tokio::test]
+async fn up_with_another_recipe_defaults_to_its_own_image() {
+    let (_tmp, registry, spec) = fixture();
+    let fake = FakeHost::new();
+    provision_swarm_with(
+        &fake,
+        request(
+            &registry,
+            &spec,
+            &settings(),
+            Some(Path::new("images/swarmy-dev")),
+        ),
+    )
+    .await
+    .unwrap();
+    let config: Settings = toml::from_str(&fake.configs()[0]).unwrap();
+    assert_eq!(
+        config.selection.default_image.as_deref(),
+        Some("swarmy-dev:fleet")
+    );
+    assert!(
+        fake.calls()
+            .contains(&"image fleet-control-1 fleet".to_owned())
+    );
+}
+
 #[tokio::test]
 async fn up_rerun_skips_provisioned_hosts_and_node_add_provisions_only_the_new_one() {
     let (_tmp, registry, mut spec) = fixture();
@@ -590,6 +625,7 @@ fn reconcile_refuses_removed_or_moved_hosts() {
         tofu_bucket: None,
         tofu_bucket_endpoint: None,
         tofu_bucket_region: None,
+        tofu_networks: BTreeMap::new(),
     };
     assert!(
         reconcile(&planned[..2], &record)
@@ -699,6 +735,7 @@ mod bucket_lifecycle {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
             bucket_keys: Some(StaticKeys {
                 access_key: "access-secret".into(),
                 secret_key: "value-secret".into(),
@@ -937,10 +974,12 @@ async fn node_config_keeps_fake_call_log_relative_to_the_checkout() {
     );
 }
 
+type UpgradeRecord = (String, bool, bool, Duration, Option<String>);
+
 #[derive(Default)]
 struct FakeUpgradeHost {
     events: Mutex<Vec<String>>,
-    upgrades: Mutex<Vec<(String, bool, bool, Duration)>>,
+    upgrades: Mutex<Vec<UpgradeRecord>>,
 }
 impl upgrade::UpgradeHost for FakeUpgradeHost {
     fn version(&self, node: &Machine) -> impl Future<Output = Result<String>> {
@@ -951,7 +990,7 @@ impl upgrade::UpgradeHost for FakeUpgradeHost {
         std::future::ready(Ok("swarmy-core 0.1.0 (test)".into()))
     }
     fn has_service_units(&self, node: &Machine) -> impl Future<Output = Result<bool>> {
-        std::future::ready(Ok(node.name != "fleet-workers-1"))
+        std::future::ready(Ok(node.name == "fleet-control-1"))
     }
     fn upgrade(
         &self,
@@ -959,6 +998,7 @@ impl upgrade::UpgradeHost for FakeUpgradeHost {
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
+        primary: Option<&Machine>,
     ) -> impl Future<Output = Result<Summary>> {
         self.events
             .lock()
@@ -969,6 +1009,7 @@ impl upgrade::UpgradeHost for FakeUpgradeHost {
             services_only,
             stack,
             drain_timeout,
+            primary.map(|node| node.name.clone()),
         ));
         std::future::ready(Ok(Summary {
             node: node.name.clone(),
@@ -996,7 +1037,7 @@ async fn upgrade_fixture() -> (tempfile::TempDir, Registry, SwarmSpec, Vec<Machi
     (dir, registry, spec, machines)
 }
 #[tokio::test]
-async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
+async fn upgrade_orders_primary_first_and_respects_drain_and_dirty_checkout() {
     let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
     let host = FakeUpgradeHost::default();
     let mut policy = upgrade::Options::new(false, false, 600, false);
@@ -1017,12 +1058,12 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
     assert_eq!(
         host.events.lock().unwrap().as_slice(),
         [
-            "version:fleet-workers-2",
-            "version:fleet-workers-1",
             "version:fleet-control-1",
-            "upgrade:fleet-workers-2",
-            "upgrade:fleet-workers-1",
+            "version:fleet-workers-1",
+            "version:fleet-workers-2",
             "upgrade:fleet-control-1",
+            "upgrade:fleet-workers-1",
+            "upgrade:fleet-workers-2",
         ]
     );
     let upgrades = host.upgrades.lock().unwrap();
@@ -1031,7 +1072,7 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
             .iter()
             .map(|row| row.0.as_str())
             .collect::<Vec<_>>(),
-        ["fleet-workers-2", "fleet-workers-1", "fleet-control-1"]
+        ["fleet-control-1", "fleet-workers-1", "fleet-workers-2"]
     );
     assert!(
         upgrades
@@ -1040,7 +1081,14 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
     );
     assert_eq!(
         upgrades.iter().map(|row| row.2).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, false, false]
+    );
+    assert_eq!(
+        upgrades
+            .iter()
+            .map(|row| row.4.as_deref())
+            .collect::<Vec<_>>(),
+        [None, Some("fleet-control-1"), Some("fleet-control-1")]
     );
     assert_eq!(summaries[0].changed, ["swarmy-core"]);
     assert!(
@@ -1049,6 +1097,50 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
             .all(|summary| !summary.restarted.contains(&"node".to_owned()))
     );
 }
+#[tokio::test]
+async fn upgrade_refuses_a_swarm_without_a_primary() {
+    struct NoPrimary(FakeUpgradeHost);
+    impl upgrade::UpgradeHost for NoPrimary {
+        async fn version(&self, node: &Machine) -> Result<String> {
+            self.0.version(node).await
+        }
+        fn has_service_units(&self, _node: &Machine) -> impl Future<Output = Result<bool>> {
+            std::future::ready(Ok(false))
+        }
+        fn upgrade(
+            &self,
+            _node: &Machine,
+            _services_only: bool,
+            _drain_timeout: Duration,
+            _stack: bool,
+            _primary: Option<&Machine>,
+        ) -> impl Future<Output = Result<Summary>> {
+            std::future::ready(Err(Error::other(
+                "upgrade must not start without a primary",
+            )))
+        }
+    }
+    let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
+    let host = NoPrimary(FakeUpgradeHost::default());
+    let mut options = upgrade::Options::new(false, false, 17, false);
+    options.swarm_name = "fleet".into();
+    let error = upgrade::run(&host, &machines, options).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("has no stack host with services")
+    );
+    assert!(
+        !host
+            .0
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("upgrade:"))
+    );
+}
+
 #[tokio::test]
 async fn upgrade_json_has_one_complete_object_per_node() {
     let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
@@ -1089,7 +1181,7 @@ async fn upgrade_callback_reports_completed_hosts_before_failure() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("first completed host"));
-    assert_eq!(seen, ["fleet-workers-2"]);
+    assert_eq!(seen, ["fleet-control-1"]);
     assert_eq!(host.upgrades.lock().unwrap().len(), 1);
 }
 
@@ -1099,4 +1191,33 @@ fn upgrade_summary_accepts_old_json() {
         serde_json::from_str(r#"{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}"#)
             .unwrap();
     assert!(summary.units.is_empty());
+}
+
+#[test]
+fn nodes_use_an_external_bucket_only_when_the_swarm_has_one() {
+    let (_tmp, _registry, mut spec) = fixture();
+    let mut record = SwarmRecord {
+        name: spec.name.clone(),
+        created_at: jiff::Timestamp::now(),
+        api: SwarmApi::default(),
+        hosts: BTreeMap::new(),
+        bucket_keys: None,
+        tofu_state: None,
+        tofu_bucket: None,
+        tofu_bucket_endpoint: None,
+        tofu_bucket_region: None,
+        tofu_networks: BTreeMap::new(),
+    };
+    assert!(!external_bucket(&spec, &record));
+    record.tofu_bucket = Some("swarmy-fleet-000000000001".into());
+    assert!(external_bucket(&spec, &record));
+    record.tofu_bucket = None;
+    spec.bucket = Some(swarmy_config::swarm::SwarmBucket {
+        name: "fleet-bucket".into(),
+        endpoint: "https://objects.example.com".into(),
+        region: "eu-central".into(),
+        prefix: swarmy_config::ObjectPrefix::default(),
+        conditional_create: true,
+    });
+    assert!(external_bucket(&spec, &record));
 }

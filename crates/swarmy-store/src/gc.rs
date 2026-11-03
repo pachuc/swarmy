@@ -12,24 +12,14 @@ impl Store {
     /// Rejects a live collector, invalid expiry, and transaction failures.
     pub async fn acquire_gc_lease(&self, run: &GcRun, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let now = self.now();
-            let key = self.keys().gc_lease();
-            if expires_at <= now
-                || read::<Lease>(&trx, &key)
-                    .await?
-                    .is_some_and(|lease| lease.expires_at > now)
-            {
-                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
-            }
-            let sequence_key = self.keys().gc_sequence();
-            let seq = crate::seq_after(read::<u64>(&trx, &sequence_key).await?.unwrap_or(0), 1)?;
-            let lease = Lease {
-                owner: run.owner,
-                expires_at,
-                seq,
+            let keys = crate::singleton_lease::SingletonKeys {
+                lease: self.keys().gc_lease(),
+                sequence: self.keys().gc_sequence(),
             };
-            write(&trx, &sequence_key, &seq)?;
-            write(&trx, &key, &lease)?;
+            let lease =
+                crate::singleton_lease::claim(&trx, &keys, run.owner, self.now(), expires_at)
+                    .await?
+                    .ok_or(crate::FenceError::GcLeaseMismatch)?;
             write(&trx, &self.keys().gc_run(run.owner), run)?;
             Ok(lease)
         })
@@ -41,18 +31,14 @@ impl Store {
     /// Rejects expired or replaced leases and transaction failures.
     pub async fn renew_gc_lease(&self, expected: &Lease, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let key = self.keys().gc_lease();
-            if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= self.now()
-                || expires_at <= expected.expires_at
-            {
-                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
-            }
-            let lease = Lease {
-                expires_at,
-                ..expected.clone()
+            let keys = crate::singleton_lease::SingletonKeys {
+                lease: self.keys().gc_lease(),
+                sequence: self.keys().gc_sequence(),
             };
-            write(&trx, &key, &lease)?;
+            let lease =
+                crate::singleton_lease::extend(&trx, &keys, expected, self.now(), expires_at)
+                    .await?
+                    .ok_or(crate::FenceError::GcLeaseMismatch)?;
             Ok(lease)
         })
         .await
@@ -64,8 +50,7 @@ impl Store {
     pub async fn finish_gc_run(&self, expected: &Lease, run: &GcRun) -> Result<()> {
         self.transaction(|trx| async move {
             let key = self.keys().gc_lease();
-            if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= self.now()
+            if !crate::singleton_lease::is_current(&trx, &key, expected, self.now()).await?
                 || expected.owner != run.owner
             {
                 return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
@@ -110,25 +95,54 @@ impl Store {
 }
 
 impl Store {
-    /// Protect reuse of an existing content address before checking it again.
-    /// An object may have been deleted between the first HEAD and this guard.
+    /// Protect existing content addresses in one transaction. Returns hashes
+    /// whose deletion is reserved by a live collector.
     /// # Errors
-    /// Returns `LeaseMismatch` while a live collector is deleting this hash,
-    /// or a storage error. The uploader can retry after the deletion finishes.
-    pub async fn protect_reused_chunk(&self, hash: ContentHash) -> Result<()> {
+    /// Returns storage errors.
+    pub async fn protect_reused_chunks(&self, hashes: &[ContentHash]) -> Result<Vec<ContentHash>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
         self.transaction(|trx| async move {
-            let deleting = self.keys().gc_deleting(hash);
-            if let Some(owner) = read::<LeaseOwnerId>(&trx, &deleting).await?
-                && read::<Lease>(&trx, &self.keys().gc_lease())
-                    .await?
-                    .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
-            {
-                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
+            let reservations = try_join_all(hashes.iter().map(|hash| async {
+                read::<LeaseOwnerId>(&trx, &self.keys().gc_deleting(*hash)).await
+            }))
+            .await?;
+            let lease = if reservations.iter().any(Option::is_some) {
+                read::<Lease>(&trx, &self.keys().gc_lease()).await?
+            } else {
+                None
+            };
+            let now = self.now();
+            let mut deleting = Vec::new();
+            for (&hash, reservation) in hashes.iter().zip(reservations) {
+                if reservation.is_some_and(|owner| {
+                    lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.owner == owner && lease.expires_at > now)
+                }) {
+                    deleting.push(hash);
+                    continue;
+                }
+                trx.clear(&self.keys().gc_deleting(hash));
+                write(&trx, &self.keys().chunk_reused(hash), &now)?;
             }
-            trx.clear(&deleting);
-            write(&trx, &self.keys().chunk_reused(hash), &self.now())
+            Ok(deleting)
         })
         .await
+    }
+
+    /// Protect one reused chunk for tests and test-support clients.
+    /// # Errors
+    /// Returns `GcLeaseMismatch` while a live collector deletes the hash,
+    /// or a storage error.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn protect_reused_chunk(&self, hash: ContentHash) -> Result<()> {
+        if self.protect_reused_chunks(&[hash]).await?.is_empty() {
+            Ok(())
+        } else {
+            Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch))
+        }
     }
 
     /// Serialize deletion against reuse of old objects by active uploaders.

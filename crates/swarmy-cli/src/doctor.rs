@@ -429,11 +429,32 @@ fn gateway_providers(snapshot: &Snapshot) -> Vec<String> {
     providers
 }
 
+/// Cards on live nodes, for the nodes check; `None` when no live node has a card.
+fn gpu_summary(snapshot: &Snapshot, live: &[&swarmy_api_types::DoctorService]) -> Option<String> {
+    let cards: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let gpu = node.gpu.as_ref()?;
+            live.iter()
+                .any(|service| service.instance_id == node.node_id)
+                .then(|| {
+                    format!(
+                        "{} {}x {} ({} MiB)",
+                        node.node_id, gpu.count, gpu.model, gpu.memory_mib
+                    )
+                })
+        })
+        .collect();
+    (!cards.is_empty()).then(|| cards.join(", "))
+}
+
 fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
     for (role, kind) in [
         ("scheduler", swarmy_api_types::ServiceRole::Scheduler),
         ("worker", swarmy_api_types::ServiceRole::Worker),
         ("gateway", swarmy_api_types::ServiceRole::Gateway),
+        ("node-api", swarmy_api_types::ServiceRole::NodeApi),
     ] {
         let live: Vec<_> = snapshot
             .services
@@ -473,12 +494,18 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         Check::warn(
             "nodes",
             "no live nodes; capacity is zero",
-            "Start `swarmy-core node` on a sandbox node.",
+            "Start `swarmy-node` on a sandbox node.",
         )
     } else {
         Check::new(
             "nodes",
-            Ok(format!("{} alive; {} sandbox slots", nodes.len(), slots)),
+            Ok(format!(
+                "{} alive; {} sandbox slots{}",
+                nodes.len(),
+                slots,
+                gpu_summary(snapshot, &nodes)
+                    .map_or_else(String::new, |summary| format!("; GPU cards: {summary}"))
+            )),
             "",
         )
     });
@@ -622,6 +649,39 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn nodes_check_lists_gpu_cards() {
+        let mut value = json!({
+            "services": [{"role":"node", "instance_id":"n1", "version":"0.1.0", "alive":true,
+                "providers":[], "capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2}}],
+            "images":[], "default_image":null, "credentials":[],
+            "nodes":[{"node_id":"n1","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},
+                "last_heartbeat":"2026-10-29T00:00:00Z","committed_memory_bytes":0,
+                "gpu":{"model":"NVIDIA L4","memory_mib":23034,"count":1}}]
+        });
+        let mut checks = Vec::new();
+        service_checks(&mut checks, &serde_json::from_value(value.clone()).unwrap());
+        assert!(
+            checks
+                .iter()
+                .find(|c| c.name == "nodes")
+                .unwrap()
+                .detail
+                .contains("GPU cards: n1 1x NVIDIA L4 (23034 MiB)")
+        );
+        value["nodes"][0]["gpu"] = serde_json::Value::Null;
+        checks.clear();
+        service_checks(&mut checks, &serde_json::from_value(value).unwrap());
+        assert!(
+            !checks
+                .iter()
+                .find(|c| c.name == "nodes")
+                .unwrap()
+                .detail
+                .contains("GPU")
+        );
+    }
+
+    #[test]
     fn core_services_are_required_and_missing_api_has_no_service_lines() {
         let mut checks = vec![Check::new("API", Err("unreachable".into()), "start API")];
         assert!(!report(std::mem::take(&mut checks), Vec::new(), true));
@@ -647,6 +707,23 @@ mod tests {
             checks
                 .iter()
                 .any(|check| check.name == "gateway" && check.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "node-api" && check.status == "fail")
+        );
+        let mut live = Vec::new();
+        let snapshot: Snapshot = serde_json::from_value(json!({
+            "services": [{"role":"node_api", "instance_id":"api1", "version":"0.1.0", "alive":true,
+                "providers":[], "capacity":null}], "images":[], "default_image":null,
+            "credentials":[]
+        }))
+        .unwrap();
+        service_checks(&mut live, &snapshot);
+        assert!(
+            live.iter()
+                .any(|check| check.name == "node-api" && check.status == "pass")
         );
     }
 }

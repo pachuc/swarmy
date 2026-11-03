@@ -3,7 +3,9 @@
 `swarmy image build images/swarmy-dev` builds and registers `swarmy-dev:dev`;
 pass `--tag NAME` for another tag, and `swarmy swarm create NAME --host <machine-address> --ssh-key <bootstrap-key>` followed by `swarmy swarm up NAME --image-recipe images/swarmy-dev` builds it on a node as that node's default image. The
 recipe uses the same Ubuntu Noble source and package set as `base-ubuntu`,
-plus Clang and libclang for the workspace's FoundationDB bindings. The builder runs
+plus Clang and libclang for the workspace's FoundationDB bindings,
+`openssh-client` for `ssh-keygen`, which the CLI's SSH acceptance tests use,
+and `libgl-dev`, the OpenGL development files for building GL programs. The builder runs
 `images/common/agent-setup.sh` before this image's setup script to install the
 `agent` account and GitHub credential helper. No credential is copied in.
 
@@ -32,6 +34,14 @@ rather than a commit pinned in this recipe.
 The image has a 64 GiB virtual disk (sparse, so unused space costs nothing), enough for the toolchain and tools,
 several clones, and a target directory that the worker prunes when it passes
 40 GiB (see the fleet worker rules in `AGENTS.md`). A full workspace test build needs about 30 GiB, which is why 32 GiB was too small.
+
+## Display
+
+The image runs `images/common/desktop-setup.sh` and sets `display = true`, so
+sessions have an X display on `:99`, Chromium, and the browser and screen tools.
+The display runs on the card in a GPU sandbox and on the CPU otherwise; see
+[graphics.md](../../docs/graphics.md). Workers created before this change keep
+their old image until they are recreated.
 
 ## Rebuilding from a new source commit
 

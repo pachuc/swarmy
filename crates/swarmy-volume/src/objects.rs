@@ -1,7 +1,7 @@
 //! Shared object storage clients built from settings.
 //!
 //! Every service using a metadata namespace must use the same object
-//! namespace. This constructor lives next to the store so the client binary
+//! namespace. This constructor lives next to the volume library so the client binary
 //! never links an object storage implementation.
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +16,14 @@ use object_store::{
 };
 use swarmy_config::Settings;
 
-use crate::blob::BlobError;
+/// Failures building the shared object storage client.
+#[derive(Debug, thiserror::Error)]
+pub enum ObjectsError {
+    #[error(transparent)]
+    Configuration(#[from] swarmy_config::Error),
+    #[error(transparent)]
+    ObjectStore(#[from] object_store::Error),
+}
 
 fn regional_mode(settings: &Settings) -> (bool, bool) {
     (
@@ -80,7 +87,7 @@ fn builder_with_env(
 /// listing names.
 /// # Errors
 /// Rejects invalid or ambiguous namespaces and invalid S3 client settings.
-pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobError> {
+pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, ObjectsError> {
     let (bucket, prefix) = settings.s3_namespace()?;
     let store = builder(settings, bucket).build()?;
     let store: Arc<dyn ObjectStore> = Arc::new(store);

@@ -8,6 +8,8 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlobError {
+    #[error(transparent)]
+    Objects(#[from] swarmy_volume::objects::ObjectsError),
     #[error("blob not found: {0}")]
     Missing(String),
     #[error(transparent)]
@@ -70,7 +72,7 @@ impl ObjectBlobStore {
     }
 
     pub(crate) fn from_settings(settings: &swarmy_config::Settings) -> Result<Self, BlobError> {
-        Ok(Self::new(crate::objects::from_settings(settings)?))
+        Ok(Self::new(swarmy_volume::objects::from_settings(settings)?))
     }
 
     #[must_use]

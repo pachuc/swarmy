@@ -1,7 +1,12 @@
-use crate::{Request, Response};
+use crate::{
+    Request, Response,
+    keeper::{Answered, Keeper},
+};
 use anyhow::Result;
 use std::{sync::Arc, time::Duration};
+use swarmy_core::{VolumeId, WriterOpening};
 use swarmy_sandbox::RuncRuntime;
+use swarmy_volume::WriterGrant;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -11,6 +16,7 @@ use tokio::{
 pub(crate) async fn handle(
     socket: UnixStream,
     runtime: Arc<RuncRuntime>,
+    keeper: Keeper,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     let (read, mut write) = socket.into_split();
@@ -22,9 +28,18 @@ pub(crate) async fn handle(
     .await??;
     let request: Request = serde_json::from_str(&line)?;
     let result = match request {
-        Request::Create { spec, disk } => runtime.create(spec, disk).await.map(Response::Sandbox),
+        Request::Create { spec, disk, writer } => {
+            let grant = passed_grant(&keeper, disk.volume_id, writer);
+            runtime
+                .create(spec, disk, grant, None)
+                .await
+                .map(Response::Sandbox)
+        }
         Request::Pause(sandbox) => runtime.pause(&sandbox).await.map(Response::Paused),
-        Request::Resume(handle) => runtime.resume(handle).await.map(Response::Sandbox),
+        Request::Resume { handle, writer } => {
+            let grant = passed_grant(&keeper, handle.disk.volume_id, writer);
+            runtime.resume(handle, grant).await.map(Response::Sandbox)
+        }
         Request::Destroy(sandbox) => runtime.destroy(sandbox).await.map(|()| Response::Destroyed),
         Request::Checkpoint(sandbox) => runtime
             .checkpoint(&sandbox)
@@ -58,4 +73,20 @@ async fn frame(write: &mut (impl AsyncWrite + Unpin), response: &Response) -> Re
     bytes.push(b'\n');
     tokio::time::timeout(Duration::from_secs(5), write.write_all(&bytes)).await??;
     Ok(())
+}
+
+/// The keeper renews a lease handed over the control socket from now on.
+fn passed_grant(keeper: &Keeper, volume: VolumeId, writer: WriterOpening) -> WriterGrant {
+    // The control socket has no server answer, so its first deadline uses the local clock.
+    let answered = Answered {
+        sent: tokio::time::Instant::now(),
+        server_now: jiff::Timestamp::now(),
+    };
+    WriterGrant {
+        volume,
+        lease: keeper.hold_writer(volume, writer.lease, answered),
+        head: writer.head,
+        header: writer.header,
+        renewal: None,
+    }
 }

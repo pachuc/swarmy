@@ -1,12 +1,14 @@
-# Cost per agent across tokens, compute, and storage
+# Cost per agent across storage, with budgets
 
 Recorded 2026-09-21.
 
 ## What it is
 
-The compute and storage side of cost per agent and per swarm: compute (the
-share of node hours the agent's computer occupied) and storage (the chunks
-its disk and snapshots hold in object storage, priced at the bucket's rate).
+The storage side of cost per agent and per swarm: the chunks its disk and
+snapshots hold in object storage, priced at the bucket's rate. Elastic machine
+cost is the machine ledger (`swarmy swarm machines` and the machines section
+of `swarmy cost`, documented in `docs/swarms.md`); per-agent compute will come
+from its assignment intervals.
 The inference side (tokens and cost by session, agent, provider, auth entry,
 and time range) is already built as hourly rollups with `swarmy cost` views
 (see `docs/providers.md`); this item extends those views.
@@ -21,24 +23,18 @@ already hit spending limits by surprise. Provider quota and admission control
 ## Why not now
 
 Inference is the dominant cost today and is covered by the provider goal.
-Compute and storage attribution need the cloud topology to settle first,
-since node hours and bucket sizes are only meaningful once swarms run
-unattended in the cloud.
+Storage attribution needs the cloud topology to settle first, since bucket
+sizes are only meaningful once swarms run unattended in the cloud.
 
 ## What it would take
 
-1. Compute: the placement records already say which node hosted which
-   computer and when; a usage counter per agent of sandbox-seconds, written by
-   the node daemon at eviction and on a periodic tick for long-lived
-   sandboxes, priced by the node's instance type from a small table in the
-   swarm record.
-2. Storage: the collector's mark phase already walks every live manifest; have
+1. Storage: the collector's mark phase already walks every live manifest; have
    it record, per computer, the bytes of chunks referenced (exclusive and
    shared, since clones share chunks), and price by the bucket's storage rate.
-3. Add compute and storage as dimensions of the provider goal's hourly
+2. Add storage as a dimension of the provider goal's hourly
    rollups so `swarmy cost` shows them beside inference with the same time
    groupings.
-4. Budgets: an optional per-agent or per-swarm monthly limit that pauses new
+3. Budgets: an optional per-agent or per-swarm monthly limit that pauses new
    turns when exceeded, with a notice delivered to the agent. This is the
    piece that overlaps with admission control and should be designed with it.
 

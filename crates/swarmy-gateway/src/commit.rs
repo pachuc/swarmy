@@ -89,8 +89,8 @@ impl Gateway {
                     }));
                 }
                 warn!(error = %swarmy_core::error_chain(&error), attempts = retry.attempts, request_id = %job.request_id, "provider failed; retrying");
-                self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
-                self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
+                self.observe_wait(job, turn, swarmy_store::MetricWaitKind::Retry);
+                self.observe_wait(job, turn, swarmy_store::MetricWaitKind::ProviderFailure);
                 self.store.release_inference(delivery.claim).await?;
                 delivery
                     .message
@@ -132,13 +132,17 @@ impl Gateway {
             .await?;
         if result.is_err() {
             let kind = if class.is_some_and(swarmy_llm::ErrorClass::rate_limited) {
-                swarmy_store::WaitKind::RateLimit
+                swarmy_store::MetricWaitKind::RateLimit
             } else {
-                swarmy_store::WaitKind::ProviderFailure
+                swarmy_store::MetricWaitKind::ProviderFailure
             };
             self.observe_wait(delivery.job, delivery.turn, kind);
             if class.is_some_and(|class| class.retryable) {
-                self.observe_wait(delivery.job, delivery.turn, swarmy_store::WaitKind::Retry);
+                self.observe_wait(
+                    delivery.job,
+                    delivery.turn,
+                    swarmy_store::MetricWaitKind::Retry,
+                );
             }
         }
         let event = Self::terminal_event(&TerminalInput {
@@ -177,11 +181,6 @@ impl Gateway {
             &event,
             streamed,
         );
-        if stored_result.is_ok() {
-            self.store
-                .clear_inference_wait(delivery.job.session_id)
-                .await?;
-        }
         delivery.message.acknowledge().await?;
         Ok(())
     }
@@ -426,7 +425,7 @@ impl Gateway {
                 .expected_head
                 .checked_add(2)
                 .ok_or(crate::Error::Internal("sequence overflow"))?,
-            object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
+            object_key: swarmy_core::blob_key(&bytes),
         };
         self.blobs.put(&snapshot.object_key, bytes.into()).await?;
         Ok(Some(snapshot))

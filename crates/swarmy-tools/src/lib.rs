@@ -20,6 +20,30 @@ macro_rules! sandbox_tool {
     };
 }
 
+macro_rules! store_tool {
+    ($kind:ident, $name:literal, $description:literal, $parameters:expr) => {
+        pub struct $kind;
+        impl Tool for $kind {
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn description(&self) -> &'static str {
+                $description
+            }
+            fn parameters(&self) -> Value {
+                $parameters
+            }
+            fn execute(&self, _: Value) -> BoxFuture<'_, Result<String, String>> {
+                Box::pin(async {
+                    Err(concat!($name, " must execute through the agent store").into())
+                })
+            }
+        }
+    };
+}
+
+mod gpu;
+pub use gpu::{ReleaseGpu, RequestGpu};
 mod timers;
 pub use timers::{CancelTimer, ListTimers, SetTimer};
 mod files;
@@ -155,7 +179,7 @@ pub fn is_display_name(name: &str) -> bool {
     name.starts_with("browser_") || name.starts_with("screen_")
 }
 
-pub const DISPLAY_PROMPT: &str = "## Browser and screen tools\nFor browser pages, prefer browser_snapshot and its element refs over screenshots: accessibility text is faster and more reliable for navigation. Use browser_screenshot when visual layout matters. Use screen_screenshot and screen_windows for non-browser applications.";
+pub const DISPLAY_PROMPT: &str = "## Browser and screen tools\nFor browser pages, prefer browser_snapshot and its element refs over screenshots: accessibility text is faster and more reliable for navigation. Use browser_screenshot when visual layout matters. Use screen_screenshot and screen_windows for non-browser applications. `cat /run/swarmy-display/renderer` prints nvidia when the display runs on the GPU and software when it runs on the CPU.";
 
 pub fn register_display(tools: &mut ToolRegistry) {
     tools.register(Box::new(BrowserNavigate));
@@ -181,6 +205,8 @@ pub fn register(tools: &mut ToolRegistry) {
     tools.register(Box::new(SetTimer));
     tools.register(Box::new(ListTimers));
     tools.register(Box::new(CancelTimer));
+    tools.register(Box::new(RequestGpu));
+    tools.register(Box::new(ReleaseGpu));
     tools.register(Box::new(Read));
     tools.register(Box::new(Write));
     tools.register(Box::new(Edit));
@@ -203,6 +229,13 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::BashArguments;
+    #[test]
+    fn gpu_tool_names_match_core() {
+        assert_eq!(RequestGpu.name(), swarmy_core::REQUEST_GPU_TOOL);
+        assert_eq!(ReleaseGpu.name(), swarmy_core::RELEASE_GPU_TOOL);
+        assert!(!RequestGpu.sandbox_bound());
+        assert!(!ReleaseGpu.sandbox_bound());
+    }
 
     /// Anthropic, Bedrock, xAI, and Azure reject combinators at the top level of a
     /// tool schema, so every registered tool must be a plain object there.

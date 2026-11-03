@@ -241,33 +241,48 @@ impl Store {
         .await
     }
 
-    /// Acquire only when no writer exists or the previous writer has expired.
-    /// The caller supplies time, as with session leases. Every grant increments
-    /// a retained counter so releasing and reacquiring cannot recreate an old token.
+    /// Acquire a writer using the store clock to decide whether the previous writer expired.
+    /// Every new grant increments the retained sequence.
     /// # Errors
-    /// Rejects live writers, invalid expiry times, missing volumes, and transaction failures.
+    /// Rejects live writers, invalid expiry, missing volumes and storage failures.
     pub async fn acquire_writer_lease(
         &self,
         id: VolumeId,
         owner: LeaseOwnerId,
-        now: Timestamp,
         expires_at: Timestamp,
     ) -> Result<Lease> {
-        if expires_at <= now {
-            return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
-        }
         self.transaction(|trx| async move {
-            let mut volume = self.volume(&trx, id).await?;
-            self.check_volume_placement(&trx, id, owner).await?;
-            if volume
-                .writer_lease
-                .as_ref()
-                .is_some_and(|lease| lease.expires_at > now)
-            {
+            let now = self.now();
+            if expires_at <= now {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             let seq_key = self.keys().volume_lease_seq(id);
-            let seq = crate::seq_after(read::<u64>(&trx, &seq_key).await?.unwrap_or(0), 1)?;
+            let (volume, bound, previous) = futures::join!(
+                self.volume(&trx, id),
+                self.check_volume_placement(&trx, id, owner),
+                read::<u64>(&trx, &seq_key),
+            );
+            let mut volume = volume?;
+            if let Some(mut lease) = volume
+                .writer_lease
+                .clone()
+                .filter(|lease| lease.expires_at > now)
+            {
+                if lease.owner != owner {
+                    return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+                }
+                if !bound? {
+                    return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+                }
+                if expires_at > lease.expires_at {
+                    lease.expires_at = expires_at;
+                    volume.writer_lease = Some(lease.clone());
+                    write(&trx, &self.keys().volume(id), &volume)?;
+                }
+                return Ok(lease);
+            }
+            bound?;
+            let seq = crate::seq_after(previous?.unwrap_or(0), 1)?;
             let lease = Lease {
                 owner,
                 expires_at,
@@ -281,29 +296,29 @@ impl Store {
         .await
     }
 
-    /// Release only with the complete, still-live fencing token.
+    /// Release a live grant; repeating after its release succeeds at the same sequence.
     /// # Errors
-    /// Rejects absent, expired, or replaced leases and transaction failures.
-    pub async fn release_writer_lease(
-        &self,
-        id: VolumeId,
-        expected: &Lease,
-        now: Timestamp,
-    ) -> Result<()> {
+    /// Rejects expired or replaced grants and storage failures.
+    pub async fn release_writer_lease(&self, id: VolumeId, expected: &Lease) -> Result<()> {
         self.transaction(|trx| async move {
-            let mut volume = self.volume(&trx, id).await?;
-            if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= now {
-                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+            let seq_key = self.keys().volume_lease_seq(id);
+            let (volume, seq) = futures::join!(self.volume(&trx, id), read::<u64>(&trx, &seq_key),);
+            let mut volume = volume?;
+            match volume.writer_lease.as_ref() {
+                Some(lease) if lease.same_grant(expected) && lease.expires_at > self.now() => {
+                    volume.writer_lease = None;
+                    write(&trx, &self.keys().volume(id), &volume)
+                }
+                None if seq? == Some(expected.seq) => Ok(()),
+                _ => Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch)),
             }
-            volume.writer_lease = None;
-            write(&trx, &self.keys().volume(id), &volume)
         })
         .await
     }
 
-    /// Renew a live writer without changing its fencing sequence.
+    /// Extend a live writer to at least `expires_at`; a repeat is a no-op.
     /// # Errors
-    /// Rejects expired or replaced tokens and non-increasing expiry times.
+    /// Rejects expired or replaced tokens and storage failures.
     pub async fn renew_writer_lease(
         &self,
         id: VolumeId,
@@ -311,21 +326,22 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<Lease> {
         self.transaction(|trx| async move {
-            self.check_volume_placement(&trx, id, expected.owner)
-                .await?;
-            let mut volume = self.volume(&trx, id).await?;
-            if volume.writer_lease.as_ref() != Some(expected)
-                || expected.expires_at <= self.now()
-                || expires_at <= expected.expires_at
-            {
-                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+            let (placement, volume) = futures::join!(
+                self.check_volume_placement(&trx, id, expected.owner),
+                self.volume(&trx, id),
+            );
+            placement?;
+            let mut volume = volume?;
+            let mut lease = volume
+                .writer_lease
+                .clone()
+                .filter(|lease| lease.same_grant(expected) && lease.expires_at > self.now())
+                .ok_or(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch))?;
+            if expires_at > lease.expires_at {
+                lease.expires_at = expires_at;
+                volume.writer_lease = Some(lease.clone());
+                write(&trx, &self.keys().volume(id), &volume)?;
             }
-            let lease = Lease {
-                expires_at,
-                ..expected.clone()
-            };
-            volume.writer_lease = Some(lease.clone());
-            write(&trx, &self.keys().volume(id), &volume)?;
             Ok(lease)
         })
         .await
@@ -371,40 +387,46 @@ impl Store {
         retention: NonZeroUsize,
     ) -> Result<()> {
         self.transaction(|trx| async move {
-            self.check_volume_placement(&trx, id, expected.owner)
-                .await?;
-            let mut volume = self.volume(&trx, id).await?;
-            if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
+            let parent_key = self.keys().manifest_parent(next);
+            let next_key = self.keys().manifest(next);
+            let previous_key = self.keys().manifest(previous);
+            let (placement, volume, parent, next_header, old_header, snapshots) = futures::join!(
+                self.check_volume_placement(&trx, id, expected.owner),
+                self.volume(&trx, id),
+                read::<ManifestId>(&trx, &parent_key),
+                read::<ManifestHeader>(&trx, &next_key),
+                read::<ManifestHeader>(&trx, &previous_key),
+                self.snapshots(&trx, id),
+            );
+            placement?;
+            let mut volume = volume?;
+            if !volume
+                .writer_lease
+                .as_ref()
+                .is_some_and(|lease| lease.same_grant(expected) && lease.expires_at > self.now())
+            {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
-            let parent_key = self.keys().manifest_parent(next);
+            let (parent, next_header) = (parent?, next_header?);
             if volume.head_manifest == next
-                && read::<ManifestId>(&trx, &parent_key).await? == Some(previous)
-                && read::<ManifestHeader>(&trx, &self.keys().manifest(next))
-                    .await?
-                    .as_ref()
-                    == Some(header)
+                && parent == Some(previous)
+                && next_header.as_ref() == Some(header)
             {
                 return Ok(());
             }
             if volume.head_manifest != previous {
                 return Err(StoreError::Fence(crate::FenceError::VolumeHeadMismatch));
             }
-            let old: ManifestHeader = read(&trx, &self.keys().manifest(previous))
-                .await?
-                .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
+            let old = old_header?.ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
             if header.size != old.size || header.chunk_size != old.chunk_size {
                 return Err(StoreError::Domain(crate::DomainError::InvalidManifest));
             }
-            if read::<ManifestHeader>(&trx, &self.keys().manifest(next))
-                .await?
-                .is_some()
-            {
+            if next_header.is_some() {
                 return Err(StoreError::Domain(crate::DomainError::ManifestExists));
             }
-            write(&trx, &self.keys().manifest(next), header)?;
+            write(&trx, &next_key, header)?;
             write(&trx, &parent_key, &previous)?;
-            let mut snapshots = self.snapshots(&trx, id).await?;
+            let mut snapshots = snapshots?;
             snapshots.insert(0, next);
             snapshots.truncate(retention.get());
             write(&trx, &self.keys().volume_snapshots(id), &snapshots)?;
@@ -530,7 +552,7 @@ impl Store {
             .ok_or(StoreError::Storage(crate::StorageError::Corrupt))
     }
 
-    async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
+    pub(crate) async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
         read::<ManifestHeader>(trx, &self.keys().manifest(id))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
@@ -543,7 +565,7 @@ impl Store {
             .ok_or(StoreError::Domain(crate::DomainError::VolumeMissing))
     }
 
-    async fn insert_volume(
+    pub(crate) async fn insert_volume(
         &self,
         trx: &Transaction,
         id: VolumeId,

@@ -1,6 +1,8 @@
 //! Durable dispatch fences and recovery notices shared by all worker replicas.
 use foundationdb::Transaction;
 use jiff::Timestamp;
+#[cfg(any(test, feature = "test-support"))]
+use std::future::Future;
 use swarmy_core::{
     Event, Message, MessageId, MessageRole, Part, PlacementChangeReason, PlacementRecord,
     SessionId, SessionState, ToolJob, ToolResult, VolumeId, VolumeRecord, computer_rebuilt_message,
@@ -8,31 +10,62 @@ use swarmy_core::{
 
 use crate::{Result, Store, StoreError, read, scan, scan_all, write};
 
+/// What a recovery scan should do with a pending tool job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolRoute {
+    /// Completed or recovered; never publish it again.
+    Gone,
+    /// A node holds a live claim and is running it; republishing would only
+    /// queue a copy behind the running call.
+    Claimed,
+    /// Pending without a live claim; publish when the schedule says so.
+    Publish,
+}
+
 impl Store {
     /// Publish sampled call occupancy only for the current live placement.
     /// # Errors
     /// Rejects stale placement epochs and storage or encoding failures.
     pub async fn put_agent_call_status(&self, status: &swarmy_core::AgentCallStatus) -> Result<()> {
-        self.transaction(|trx| async move {
-            let placement: PlacementRecord = read(&trx, &self.keys().placement(status.agent_id))
-                .await?
-                .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
-            if placement.node_id != status.node_id || placement.epoch != status.epoch {
-                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-            }
-            self.check_live_placement(&trx, &placement).await?;
-            let key = self.keys().agent_call_status(status.agent_id);
-            if read::<swarmy_core::AgentCallStatus>(&trx, &key)
-                .await?
-                .is_some_and(|old| {
-                    old.epoch == status.epoch && old.observed_at > status.observed_at
-                })
-            {
-                return Ok(());
-            }
-            write(&trx, &key, status)
-        })
-        .await
+        self.transaction(|trx| async move { self.put_agent_call_status_in(&trx, status).await })
+            .await
+    }
+
+    async fn put_agent_call_status_in(
+        &self,
+        trx: &Transaction,
+        status: &swarmy_core::AgentCallStatus,
+    ) -> Result<()> {
+        let key = self.keys().agent_call_status(status.agent_id);
+        let (fence, old) = futures::join!(
+            self.read_placement_fence(trx, status.agent_id),
+            read::<swarmy_core::AgentCallStatus>(trx, &key),
+        );
+        self.check_placement_fence(trx, fence, status.node_id, status.epoch)?;
+        if old?.is_some_and(|old| old.epoch == status.epoch && old.observed_at > status.observed_at)
+        {
+            return Ok(());
+        }
+        write(trx, &key, status)
+    }
+
+    /// Race a status write against a concurrent writer. Returns attempt count.
+    /// Test-only entry point, also available with the `test-support` feature.
+    /// # Errors
+    /// As `put_agent_call_status`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn put_agent_call_status_racing(
+        &self,
+        status: &swarmy_core::AgentCallStatus,
+        race: impl Future<Output = ()>,
+    ) -> Result<u32> {
+        Ok(self
+            .transaction_racing(
+                |trx| async move { self.put_agent_call_status_in(&trx, status).await },
+                race,
+            )
+            .await?
+            .1)
     }
 
     /// Return recent call occupancy, or none after expiry, release, deletion or takeover.
@@ -84,63 +117,90 @@ impl Store {
         node: swarmy_core::NodeId,
     ) -> Result<Option<swarmy_core::AgentId>> {
         self.transaction(|trx| async move {
-            if read::<bool>(&trx, &self.keys().tool_done(job.request_id))
-                .await?
-                .unwrap_or(false)
-            {
+            let done_key = self.keys().tool_done(job.request_id);
+            let placement_key = self.keys().tool_placement(job.request_id);
+            let fence = async {
+                Ok::<_, StoreError>(match read::<PlacementRecord>(&trx, &placement_key).await? {
+                    None => None,
+                    Some(placement) if placement.node_id != node => {
+                        Some(Err(StoreError::Fence(crate::FenceError::PlacementMismatch)))
+                    }
+                    Some(placement) => Some(self.check_live_placement(&trx, &placement).await),
+                })
+            };
+            let (done, session, fence) = futures::join!(
+                read::<bool>(&trx, &done_key),
+                self.session(&trx, job.session_id),
+                fence,
+            );
+            if done?.unwrap_or(false) {
                 return Ok(None);
             }
-            let session = self.session(&trx, job.session_id).await?;
+            let session = session?;
+            // Answered from the transaction's read cache: decoding the session read this key.
             self.check_computer(&trx, session.agent_id).await?;
-            if let Some(placement) =
-                read::<PlacementRecord>(&trx, &self.keys().tool_placement(job.request_id)).await?
-            {
-                if placement.node_id != node {
-                    return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-                }
-                self.check_live_placement(&trx, &placement).await?;
+            if let Some(checked) = fence? {
+                checked?;
             }
-            Ok(Some(self.session(&trx, job.session_id).await?.agent_id))
+            Ok(Some(session.agent_id))
         })
         .await
     }
 
-    /// Resolve a pending dispatch against the current placement on every retry.
+    /// Resolve a pending dispatch against the current placement on every recovery scan.
     /// A changed epoch completes the old call as failed instead of repeating its effects.
-    /// Returns false when the job was completed or recovered and must not be published.
+    /// An unchanged fence is left as is, so routing writes nothing in the
+    /// normal case and never conflicts with the node's claim.
+    /// Reports whether the job is gone, claimed by a node right now, or
+    /// still to be published. Only the node's claim fences execution; this
+    /// read only spares the node copies of a call it is running.
     /// # Errors
     /// Rejects stale placements, changed job inputs, and storage failures.
-    pub async fn route_tool_job(&self, job: &ToolJob, placement: &PlacementRecord) -> Result<bool> {
+    pub async fn route_tool_job(
+        &self,
+        job: &ToolJob,
+        placement: &PlacementRecord,
+    ) -> Result<ToolRoute> {
         self.transaction(|trx| async move {
             self.check_live_placement(&trx, placement).await?;
             let Some(value) = trx
                 .get(&self.keys().tool_job(job.request_id), false)
                 .await?
             else {
-                return Ok(false);
+                return Ok(ToolRoute::Gone);
             };
-            if self.hydrate::<ToolJob>(&value).await? != *job
+            if !crate::stored_matches(&value, job)?
                 || self.session(&trx, job.session_id).await?.agent_id != placement.agent_id
             {
                 return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
             let key = self.keys().tool_placement(job.request_id);
-            let dispatched: Option<PlacementRecord> = read(&trx, &key).await?;
+            let claim_key = self.keys().placed_tool_claim(job.request_id);
+            let (dispatched, claim) = futures::join!(
+                read::<PlacementRecord>(&trx, &key),
+                read::<crate::placed_tools::StoredPlacedClaim>(&trx, &claim_key),
+            );
+            let (dispatched, claim) = (dispatched?, claim?);
             let notice = self
                 .deliver_computer_notice(&trx, job.session_id, placement)
                 .await?;
-            if dispatched
-                .is_some_and(|old| old.epoch != placement.epoch || old.node_id != placement.node_id)
-            {
-                // A dispatch can expire without any node hosting its epoch.
-                // Fail the fenced call without inventing a computer loss.
-                let explanation =
-                    notice.unwrap_or_else(|| swarmy_core::UNCLAIMED_DISPATCH_EXPIRED.into());
-                self.fail_lost_tool(&trx, job, explanation).await?;
-                return Ok(false);
+            match dispatched {
+                Some(old) if old.epoch != placement.epoch || old.node_id != placement.node_id => {
+                    // A dispatch can expire without any node hosting its epoch.
+                    // Fail the fenced call without inventing a computer loss.
+                    let explanation =
+                        notice.unwrap_or_else(|| swarmy_core::UNCLAIMED_DISPATCH_EXPIRED.into());
+                    self.fail_lost_tool(&trx, job, explanation).await?;
+                    return Ok(ToolRoute::Gone);
+                }
+                // Rewriting the same fence conflicts with claims and completions.
+                Some(_) => {}
+                None => write(&trx, &key, placement)?,
             }
-            write(&trx, &key, placement)?;
-            Ok(true)
+            if claim.is_some_and(|claim| claim.expires_at > self.now()) {
+                return Ok(ToolRoute::Claimed);
+            }
+            Ok(ToolRoute::Publish)
         })
         .await
     }
@@ -178,14 +238,13 @@ impl Store {
             ));
         }
         session.head_seq = crate::seq_after(session.head_seq, 1)?;
-        let event = self
-            .prepare(&Event::ToolCallCompleted {
-                seq: session.head_seq,
-                request_id: job.request_id,
-                call_id: job.call_id.clone(),
-                result: ToolResult::Error { error: explanation },
-            })
-            .await?;
+        // Built inside the transaction, so it must not upload; notices and refusals are short.
+        let event = crate::prepare_inline(&Event::ToolCallCompleted {
+            seq: session.head_seq,
+            request_id: job.request_id,
+            call_id: job.call_id.clone(),
+            result: ToolResult::Error { error: explanation },
+        })?;
         trx.set(&self.keys().event(job.session_id, session.head_seq), &event);
         let keys = self.keys();
         let request = job.request_id;
@@ -219,7 +278,7 @@ impl Store {
                 .get(&self.keys().tool_job(job.request_id), false)
                 .await?
             {
-                if self.hydrate::<ToolJob>(&value).await? != *job {
+                if !crate::stored_matches(&value, job)? {
                     return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
                 }
                 self.fail_lost_tool(
@@ -317,12 +376,11 @@ impl Store {
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
             session.head_seq = crate::seq_after(session.head_seq, 1)?;
-            let event = self
-                .prepare(&Event::MessageAppended {
-                    seq: session.head_seq,
-                    message: message.clone(),
-                })
-                .await?;
+            // Built inside the transaction, so it must not upload; notices and refusals are short.
+            let event = crate::prepare_inline(&Event::MessageAppended {
+                seq: session.head_seq,
+                message: message.clone(),
+            })?;
             trx.set(&self.keys().event(id, session.head_seq), &event);
             self.write_session(trx, &session)?;
             write(trx, &delivered, &true)?;

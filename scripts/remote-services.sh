@@ -11,13 +11,11 @@ repo_dir=$(service_repo_for "$service_user")
 # and teardown agree. The short name below is only prose for unit
 # descriptions and readiness messages.
 read_shared_list service_units swarmy_service_units
-node_unit=$(swarmy_agent_unit)
+service_units+=("$(swarmy_provisioner_unit)")
 set_unit_user "$service_user"
 service_units_written=()
 write_units service_units_written "${service_units[@]}"
 sudo systemctl daemon-reload
-# Reload the same namespace configuration in the execution node.
-sudo systemctl restart "$node_unit"
 for unit in "${service_units[@]}"; do
     sudo systemctl enable "$unit"
     sudo systemctl restart "$unit"
@@ -41,4 +39,7 @@ for unit in "${service_units[@]}"; do
         exit 1
     fi
 done
-echo 'scheduler, worker, gateway, and api ready on node and enabled at boot'
+# The node agent registers through the node API, so it restarts last; the
+# restart also loads the configuration uploaded with the services.
+restart_node_agent "$repo_dir"
+echo 'scheduler, worker, gateway, api, node-api, provisioner and node agent ready on node and enabled at boot' 

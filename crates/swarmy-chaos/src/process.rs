@@ -10,16 +10,38 @@ pub(crate) enum Kind {
     Worker,
     Gateway,
     Api,
+    NodeApi,
     Node,
 }
 
 impl Kind {
+    /// The binary this service runs.
+    pub(crate) const fn executable(self) -> &'static str {
+        match self {
+            Self::Node => "swarmy-node",
+            _ => "swarmy-core",
+        }
+    }
+
+    /// The role argument for core services; the node has none.
+    pub(crate) const fn arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &[],
+            Self::Scheduler => &["scheduler"],
+            Self::Worker => &["worker"],
+            Self::Gateway => &["gateway"],
+            Self::Api => &["api"],
+            Self::NodeApi => &["node-api"],
+        }
+    }
+
     pub(crate) const fn role(self) -> &'static str {
         match self {
             Self::Scheduler => "scheduler",
             Self::Worker => "worker",
             Self::Gateway => "gateway",
             Self::Api => "api",
+            Self::NodeApi => "node-api",
             Self::Node => "node",
         }
     }
@@ -42,14 +64,35 @@ impl Process {
         files: &Path,
         environment: &[(OsString, OsString)],
     ) -> Result<Self> {
+        Self::start_in(kind, index, binaries, files, environment, None)
+    }
+
+    /// `nsenter --net` switches the network namespace and then runs the service
+    /// in the same process. Unlike `ip netns exec` it keeps the mount namespace,
+    /// so /sys/fs/cgroup stays visible to the sandbox runtime.
+    pub(crate) fn start_in(
+        kind: Kind,
+        index: usize,
+        binaries: &Path,
+        files: &Path,
+        environment: &[(OsString, OsString)],
+        netns: Option<&str>,
+    ) -> Result<Self> {
         let name = format!("{}-{index}", kind.role());
         let log = OpenOptions::new()
             .create(true)
             .append(true)
             .open(files.join(format!("{name}.log")))?;
-        let mut command = Command::new(binaries.join("swarmy-core"));
+        let binary = binaries.join(kind.executable());
+        let mut command = if let Some(netns) = netns {
+            let mut command = Command::new("nsenter");
+            command.arg(format!("--net=/run/netns/{netns}")).arg(binary);
+            command
+        } else {
+            Command::new(binary)
+        };
         command
-            .arg(kind.role())
+            .args(kind.arguments())
             .current_dir(files)
             .envs(environment.iter().cloned())
             .env_remove("SWARMY_WORKER_KILL_POINT")
@@ -128,5 +171,45 @@ impl Process {
             }
         }
         Ok(())
+    }
+}
+
+/// A currently unused port; test harness callers accept the bind race.
+pub(crate) fn free_port(host: std::net::IpAddr) -> Result<u16> {
+    Ok(std::net::TcpListener::bind((host, 0))?.local_addr()?.port())
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn node_runs_swarmy_node_and_services_run_swarmy_core() {
+        use super::Kind;
+        assert_eq!(
+            (Kind::Node.executable(), Kind::Node.arguments()),
+            ("swarmy-node", &[][..])
+        );
+        assert_eq!(
+            (Kind::Worker.executable(), Kind::Worker.arguments()),
+            ("swarmy-core", &["worker"][..])
+        );
+        assert_eq!(
+            (Kind::NodeApi.executable(), Kind::NodeApi.arguments()),
+            ("swarmy-core", &["node-api"][..])
+        );
+    }
+
+    #[test]
+    fn free_port_is_bindable() {
+        let host = std::net::Ipv4Addr::LOCALHOST.into();
+        // The helper deliberately releases the port; retry if another test
+        // takes it between selection and binding.
+        for _ in 0..20 {
+            let port = super::free_port(host).unwrap();
+            if let Ok(_listener) = std::net::TcpListener::bind((host, port)) {
+                return;
+            }
+        }
+        panic!("selected ports were repeatedly claimed before binding");
     }
 }

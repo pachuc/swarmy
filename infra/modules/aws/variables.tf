@@ -39,12 +39,12 @@ variable "location" {
   }
 }
 variable "image" {
-  description = "ubuntu-24.04 for Canonical's current Ubuntu 24.04 image in the region, or an AMI id. Swarmy provisioning expects Ubuntu."
+  description = "ubuntu-24.04 for Canonical's current Ubuntu 24.04 image in the region, an AMI id, or a public SSM parameter path under /aws/service/ that holds an AMI id. Swarmy provisioning expects Ubuntu."
   type        = string
   default     = "ubuntu-24.04"
   validation {
-    condition     = var.image == "ubuntu-24.04" || can(regex("^ami-[0-9a-f]{8}([0-9a-f]{9})?$", var.image))
-    error_message = "image must be ubuntu-24.04 or an AMI id such as ami-0123456789abcdef0."
+    condition     = var.image == "ubuntu-24.04" || can(regex("^ami-[0-9a-f]{8}([0-9a-f]{9})?$", var.image)) || can(regex("^/aws/service/[A-Za-z0-9_./-]+$", var.image))
+    error_message = "image must be ubuntu-24.04, an AMI id such as ami-0123456789abcdef0, or an SSM parameter path under /aws/service/."
   }
 }
 variable "ssh_public_key" {

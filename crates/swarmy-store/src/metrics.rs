@@ -9,7 +9,7 @@ use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent, ignore_best_effort};
 
 use crate::{
     MAX_SCAN_LIMIT, Result, StoreError,
-    metrics_codec::{decode_inference, decode_summary, decode_tool},
+    metrics_codec::{decode_computer, decode_inference, decode_summary, decode_tool},
     metrics_model::{TouchedRows, TurnWrite, apply_one, assemble_turn, touched_rows},
     scan, write,
 };
@@ -19,8 +19,8 @@ pub(crate) use crate::metrics_codec::{
     StoredTurnSummaryCurrent,
 };
 pub use crate::metrics_model::{
-    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, StageTiming,
-    ToolMetric, TurnMetrics, WaitKind, completion_patches, dispatch_patches,
+    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, MetricWaitKind,
+    StageTiming, ToolMetric, TurnMetrics, completion_patches, dispatch_patches,
 };
 
 /// One queued observability write. Patches that share a turn are batched by
@@ -64,12 +64,18 @@ impl MetricsWriter {
         crate::keys::Keys::new(&self.root)
     }
 
-    async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
+    #[track_caller]
+    fn transaction<T, F, Fut>(&self, operation: F) -> impl Future<Output = Result<T>>
     where
         F: Fn(foundationdb::RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        crate::run_transaction(&self.db, &self.transactions, operation).await
+        crate::run_transaction(
+            &self.db,
+            &self.transactions,
+            std::panic::Location::caller(),
+            operation,
+        )
     }
 }
 
@@ -122,7 +128,8 @@ pub(crate) fn spawn_metrics_drain(
 
 impl MetricsWriter {
     /// Merge several independent observations in one read-modify-write
-    /// transaction. A dispatch folds its tool name into its stage, and a node
+    /// transaction. All touched rows are read in one round; the summary is
+    /// rewritten only when this batch changes it. A dispatch folds its tool name into its stage, and a node
     /// completion folds its tool result and completion stage, so each costs
     /// one transaction; the first-tool computer re-sample arrives as its own
     /// queued job so the completion never waits on the volume stat round
@@ -180,13 +187,14 @@ impl MetricsWriter {
             let summary_key = summary_key.clone();
             let touched = touched.clone();
             async move {
-                let mut state = self
+                let (mut state, stored) = self
                     .load_turn_state(&trx, session, turn, &summary_key, &touched)
                     .await?;
                 for patch in &*patches {
                     apply_one(&mut state, patch);
                 }
-                self.write_turn_state(&trx, session, turn, &summary_key, &state, &touched)
+                let summary_changed = stored.as_ref() != Some(&state.summary);
+                self.write_turn_state(&trx, session, turn, &state, &touched, summary_changed)
             }
         })
         .await
@@ -199,38 +207,61 @@ impl MetricsWriter {
         turn: MessageId,
         summary_key: &[u8],
         touched: &TouchedRows,
-    ) -> Result<TurnWrite> {
-        let mut state = TurnWrite {
-            summary: match trx.get(summary_key, false).await? {
-                None => StoredTurnSummaryCurrent {
-                    session_id: session.to_string(),
-                    turn_id: turn.to_string(),
-                    ..StoredTurnSummaryCurrent::default()
-                },
-                Some(value) => decode_summary(&value)?,
+    ) -> Result<(TurnWrite, Option<StoredTurnSummaryCurrent>)> {
+        let inference_keys: Vec<_> = touched
+            .inference
+            .iter()
+            .map(|id| (id, self.keys().turn_inference(session, turn, id)))
+            .collect();
+        let tool_keys: Vec<_> = touched
+            .tools
+            .iter()
+            .map(|id| (id, self.keys().turn_tool(session, turn, id)))
+            .collect();
+        let computer_key = self.keys().turn_computer(session, turn);
+        // All reads issue together. No patch computes a detail row from summary
+        // fields; the snapshot summary needs a conflict only if it is rewritten.
+        let (summary, inference, tools, computer) = futures::join!(
+            trx.get(summary_key, true),
+            futures::future::try_join_all(
+                inference_keys.iter().map(|(_, key)| trx.get(key, false))
+            ),
+            futures::future::try_join_all(tool_keys.iter().map(|(_, key)| trx.get(key, false))),
+            async {
+                if touched.computer {
+                    trx.get(&computer_key, false).await.map(Some)
+                } else {
+                    Ok(None)
+                }
             },
+        );
+        let stored = summary?.map(|value| decode_summary(&value)).transpose()?;
+        let mut state = TurnWrite {
+            summary: stored.clone().unwrap_or_else(|| StoredTurnSummaryCurrent {
+                session_id: session.to_string(),
+                turn_id: turn.to_string(),
+                ..StoredTurnSummaryCurrent::default()
+            }),
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
+            computer: None,
         };
-        for id in &touched.inference {
-            if !state.inference.contains_key(id) {
-                let key = self.keys().turn_inference(session, turn, id);
-                if let Some(bytes) = trx.get(&key, false).await? {
-                    state
-                        .inference
-                        .insert(id.clone(), decode_inference(&bytes)?);
-                }
+        for ((id, _), bytes) in inference_keys.iter().zip(inference?) {
+            if let Some(bytes) = bytes {
+                state
+                    .inference
+                    .insert((*id).clone(), decode_inference(&bytes)?);
             }
         }
-        for id in &touched.tools {
-            if !state.tools.contains_key(id) {
-                let key = self.keys().turn_tool(session, turn, id);
-                if let Some(bytes) = trx.get(&key, false).await? {
-                    state.tools.insert(id.clone(), decode_tool(&bytes)?);
-                }
+        for ((id, _), bytes) in tool_keys.iter().zip(tools?) {
+            if let Some(bytes) = bytes {
+                state.tools.insert((*id).clone(), decode_tool(&bytes)?);
             }
         }
-        Ok(state)
+        if let Some(Some(bytes)) = computer? {
+            state.computer = Some(decode_computer(&bytes)?);
+        }
+        Ok((state, stored))
     }
 
     fn write_turn_state(
@@ -238,15 +269,20 @@ impl MetricsWriter {
         trx: &Transaction,
         session: SessionId,
         turn: MessageId,
-        summary_key: &[u8],
         state: &TurnWrite,
         touched: &TouchedRows,
+        summary_changed: bool,
     ) -> Result<()> {
-        write(
-            trx,
-            summary_key,
-            &StoredTurnMetrics::Summary(Box::new(state.summary.clone())),
-        )?;
+        if summary_changed {
+            let summary_key = self.keys().turn_metrics(session, turn);
+            // A snapshot read needs an explicit conflict when rewriting the summary.
+            crate::add_read_conflict_key(trx, &summary_key)?;
+            write(
+                trx,
+                &summary_key,
+                &StoredTurnMetrics::Summary(Box::new(state.summary.clone())),
+            )?;
+        }
         for id in &touched.inference {
             if let Some(row) = state.inference.get(id) {
                 write(
@@ -264,6 +300,15 @@ impl MetricsWriter {
                     &StoredTurnMetrics::Tool(row.clone()),
                 )?;
             }
+        }
+        if touched.computer
+            && let Some(computer) = &state.computer
+        {
+            write(
+                trx,
+                &self.keys().turn_computer(session, turn),
+                &StoredTurnMetrics::Computer(computer.clone()),
+            )?;
         }
         Ok(())
     }
@@ -367,6 +412,26 @@ impl crate::Store {
         Ok((inference, tools))
     }
 
+    /// Computer samples for these turns, read together in one transaction.
+    async fn turn_computers(
+        &self,
+        session: SessionId,
+        turns: &[MessageId],
+    ) -> Result<Vec<Option<ComputerMetric>>> {
+        self.transaction(|trx| async move {
+            let keys: Vec<_> = turns
+                .iter()
+                .map(|turn| self.keys().turn_computer(session, *turn))
+                .collect();
+            let rows =
+                futures::future::try_join_all(keys.iter().map(|key| trx.get(key, false))).await?;
+            rows.into_iter()
+                .map(|row| row.map(|bytes| decode_computer(&bytes)).transpose())
+                .collect()
+        })
+        .await
+    }
+
     /// Read one turn's detail rows and attach their per-request timestamps as
     /// pseudo-stages so the shared derive computes whole-request throughput.
     async fn assemble_from_summary(
@@ -378,8 +443,10 @@ impl crate::Store {
         let session: SessionId = summary.session_id.parse().map(SessionId::from_ulid)?;
         let turn: MessageId = summary.turn_id.parse().map(MessageId::from_ulid)?;
         let (inference_rows, tool_rows) = self.turn_rows(session, turn).await?;
+        let computer = self.turn_computers(session, &[turn]).await?.pop().flatten();
         Ok(assemble_turn(
             &summary,
+            computer,
             inference_rows,
             tool_rows,
             inference_limit,
@@ -433,8 +500,8 @@ impl crate::Store {
 
     /// Most recent turns first, without paging the whole session. The rollup
     /// only needs the tail, so pages walk the key range in reverse. Only
-    /// summary rows are read; token, wait, and throughput totals live on the
-    /// summary so no per-request fan-out is needed.
+    /// summary rows are scanned; the rollup also fetches computer samples
+    /// for its page, but no per-request fan-out is needed.
     async fn recent_turn_summaries(
         &self,
         session: SessionId,
@@ -490,7 +557,8 @@ impl crate::Store {
     /// Roll up at most `limit` of the most recent turns of the named agent's
     /// current main session, optionally after `since`. The 200-turn cap keeps
     /// the rollup bounded no matter how long the session runs. Only summary
-    /// rows are scanned; per-request and per-tool rows are never read here.
+    /// rows are scanned and computer rows are read together in one transaction;
+    /// per-request and per-tool rows are never read here.
     /// # Errors
     /// Returns agent lookup or database failures.
     #[expect(
@@ -519,17 +587,24 @@ impl crate::Store {
         let limit = if limit == 0 { 200 } else { limit.min(200) };
         let mut latency: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
         let page = self.recent_turn_summaries(session, since, limit).await?;
+        let parsed: Vec<_> = page
+            .iter()
+            .map(|turn| turn.turn_id.parse().ok().map(MessageId::from_ulid))
+            .collect();
+        let ids: Vec<_> = parsed.iter().flatten().copied().collect();
+        let mut samples = self.turn_computers(session, &ids).await?.into_iter();
+        let computers: Vec<_> = parsed
+            .iter()
+            .map(|id| id.and_then(|_| samples.next().flatten()))
+            .collect();
         let (mut throughput_sum, mut throughput_count) = (0.0, 0_u64);
-        for turn in &page {
+        for (turn, computer) in page.iter().zip(&computers) {
             output.turns += 1;
             for (name, value) in [
                 ("append_to_first_token", turn.append_to_first_token_ms),
                 ("inference", turn.inference_duration_ms),
                 ("append_to_idle", turn.append_to_idle_ms),
-                (
-                    "placement",
-                    turn.computer.as_ref().and_then(|c| c.placement_ms),
-                ),
+                ("placement", computer.as_ref().and_then(|c| c.placement_ms)),
             ] {
                 if let Some(value) = value {
                     latency.entry(name).or_default().push(value);

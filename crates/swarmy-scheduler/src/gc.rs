@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use object_store::ObjectStore;
 use swarmy_config::{GarbageCollection, Metering};
+use swarmy_store::collector::CollectError;
 use swarmy_store::{Store, StoreError};
-use swarmy_volume::VolumeError;
 
 pub(crate) async fn run(
     store: &Store,
@@ -14,7 +14,7 @@ pub(crate) async fn run(
 ) {
     loop {
         tokio::time::sleep(policy.interval_secs).await;
-        let result = swarmy_volume::gc::collect(store, objects.clone(), policy, false).await;
+        let result = swarmy_store::collector::collect(store, objects.clone(), policy, false).await;
         report_collection(result);
         prune_metering(store, metering).await;
     }
@@ -22,10 +22,10 @@ pub(crate) async fn run(
 
 /// Log one collection outcome. A lost lease is routine (another scheduler
 /// holds it); any other failure is an error the next interval retries.
-fn report_collection(result: Result<swarmy_core::GcRun, VolumeError>) {
+fn report_collection(result: Result<swarmy_core::GcRun, CollectError>) {
     match result {
         Ok(run) => tracing::info!(?run, "chunk collection finished"),
-        Err(VolumeError::Store(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))) => {
+        Err(CollectError::Store(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))) => {
             tracing::debug!("collector lease busy or lost; retry next interval");
         }
         Err(error) => {

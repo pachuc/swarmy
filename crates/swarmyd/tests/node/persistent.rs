@@ -34,6 +34,17 @@ async fn dispatch_arguments(
     agent: AgentId,
     arguments: swarmy_core::SandboxArguments,
 ) -> ToolJob {
+    dispatch_on_image(store, bus, node, agent, arguments, "persistent:test").await
+}
+
+async fn dispatch_on_image(
+    store: &Store,
+    bus: &Bus,
+    node: NodeId,
+    agent: AgentId,
+    arguments: swarmy_core::SandboxArguments,
+    image: &str,
+) -> ToolJob {
     let session = SessionRecord {
         interrupt_requested: false,
         session_id: SessionId::from_ulid(ulid::Ulid::generate()),
@@ -56,7 +67,7 @@ async fn dispatch_arguments(
             .unwrap();
     } else {
         store
-            .create_session(&session, jiff::Timestamp::now(), "persistent:test")
+            .create_session(&session, jiff::Timestamp::now(), image)
             .await
             .unwrap();
     }
@@ -206,7 +217,7 @@ pub(super) async fn start(
     )
     .await
     .unwrap();
-    let mut node = Node::new(settings);
+    let mut node = Box::pin(Node::new(settings, store)).await;
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     bus.setup(&[WorkQueue::NodeTools(node.id)]).await.unwrap();
@@ -218,6 +229,18 @@ pub(super) async fn start(
 }
 
 pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
+    Box::pin(image_probe_records_a_boot_set_before_the_first_session(
+        settings.clone(),
+        store,
+        base,
+    ))
+    .await;
+    Box::pin(restart_waits_for_its_old_epoch(
+        settings.clone(),
+        store,
+        base,
+    ))
+    .await;
     check_lease_mismatch(&settings, store, base).await;
     let (mut node, bus) = start(settings, store, base, 3).await;
     managed_tools(&node, store, &bus).await;
@@ -225,6 +248,8 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let renewed_epoch = check_durable_background(store, &bus, &node, agent).await;
     let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
     check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
+    check_requirement_release(store, &bus, &node, agent).await;
+    api_outage(&mut node, store, &bus, agent, base).await;
     crash(&mut node, store, &bus, agent).await;
     takeover(&mut node, store, &bus, agent, true).await;
     takeover(
@@ -235,7 +260,189 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
         false,
     )
     .await;
+    boot_set_prefetch(&mut node, store, &bus, base).await;
     graceful(&mut node, store, &bus, base).await;
+}
+
+async fn image_probe_records_a_boot_set_before_the_first_session(
+    settings: swarmy_config::Settings,
+    store: &Store,
+    base: ManifestId,
+) {
+    let (mut node, bus) = start(settings, store, base, 3).await;
+    let manifest = ManifestId::from_ulid(ulid::Ulid::generate());
+    let header = store.get_manifest(base).await.unwrap().unwrap();
+    store.put_manifest(manifest, &header).await.unwrap();
+    let tag = ImageTag(format!("probe-{}", ulid::Ulid::generate()));
+    store
+        .put_image("persistent", &tag, manifest, None)
+        .await
+        .unwrap();
+    bus.setup(&[WorkQueue::ImageProbes]).await.unwrap();
+    bus.publish_work(
+        &WorkQueue::ImageProbes,
+        &swarmy_core::ImageProbe {
+            name: "persistent".into(),
+            tag: tag.clone(),
+            manifest,
+        },
+    )
+    .await
+    .unwrap();
+    let log_path = node.root.path().join("node.log");
+    swarmy_testkit::eventually(
+        "image probe did not finish",
+        Duration::from_secs(90),
+        async || {
+            let recorded = store.boot_set(manifest).await.unwrap().is_some();
+            let removed = store
+                .get_volume(swarmy_store::image_probe_volume(manifest))
+                .await
+                .unwrap()
+                .is_none();
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            (recorded && removed && log.contains("image probe finished")).then_some(())
+        },
+    )
+    .await;
+    let before = std::fs::read_to_string(&log_path).unwrap().len();
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let image = format!("persistent:{}", tag.0);
+    let job = dispatch_on_image(
+        store,
+        &bus,
+        node.id,
+        agent,
+        swarmy_core::SandboxArguments::Bash(BashArguments {
+            command: "true".into(),
+            timeout_ms: 120_000,
+            yield_seconds: 10,
+            output_budget_bytes: 32768,
+        }),
+        &image,
+    )
+    .await;
+    completed(store, &job).await;
+    swarmy_testkit::eventually(
+        "first session did not prefetch",
+        Duration::from_secs(30),
+        async || {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            log.get(before..)
+                .is_some_and(|later| later.contains("boot set prefetched"))
+                .then_some(())
+        },
+    )
+    .await;
+    evicted(store, agent).await;
+    node.stop().await;
+}
+
+async fn boot_set_prefetch(node: &mut Node, store: &Store, bus: &Bus, base: ManifestId) {
+    let first = AgentId::from_ulid(ulid::Ulid::generate());
+    let job = dispatch(store, bus, node.id, first, "true").await;
+    completed(store, &job).await;
+    swarmy_testkit::eventually(
+        "boot set was not recorded",
+        Duration::from_secs(60),
+        async || {
+            let set = store.boot_set(base).await.unwrap();
+            let log =
+                std::fs::read_to_string(node.root.path().join("node.log")).unwrap_or_default();
+            (set.is_some() && log.contains("boot set recorded")).then_some(())
+        },
+    )
+    .await;
+    let log_path = node.root.path().join("node.log");
+    let before = std::fs::read_to_string(&log_path).unwrap().len();
+    node.stop().await;
+    let cache = node.root.path().join(".swarmy/volumes/cache");
+    if let Err(error) = std::fs::remove_dir_all(cache) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+    let restarted = jiff::Timestamp::now();
+    node.start();
+    node.ready(store, restarted).await;
+    let next = AgentId::from_ulid(ulid::Ulid::generate());
+    let job = dispatch(store, bus, node.id, next, "true").await;
+    completed(store, &job).await;
+    swarmy_testkit::eventually(
+        "boot set did not prefetch chunks",
+        Duration::from_secs(30),
+        async || {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            log.get(before..).and_then(|restarted_log| {
+                restarted_log
+                    .lines()
+                    .any(|line| {
+                        line.contains("boot set prefetched")
+                            && line.split_whitespace().any(|field| {
+                                field.strip_prefix("chunks=").is_some_and(|count| {
+                                    count.parse::<u64>().is_ok_and(|count| count > 0)
+                                })
+                            })
+                    })
+                    .then_some(())
+            })
+        },
+    )
+    .await;
+    // The test node has one sandbox slot; free it for the shutdown check.
+    evicted(store, next).await;
+}
+
+/// A requirement release checkpoints and stops hosting even with processes running.
+/// Uses the agent the earlier checks placed: the test node has one sandbox
+/// slot, so a second agent could not be placed while that computer is held.
+/// It writes its own file and leaves /persistent alone, which the crash
+/// check after it still expects to read "durable".
+async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent: AgentId) {
+    let job = dispatch(store, bus, node.id, agent, "echo durable >/persistent").await;
+    completed(store, &job).await;
+    let started = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_start",
+        serde_json::json!({"command": "exec sleep 300"}),
+    )
+    .await;
+    assert!(started["process_id"].is_string());
+    let job = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        "echo after-process >/requirement-release",
+    )
+    .await;
+    completed(store, &job).await;
+    assert!(store.request_placement_release(agent).await.unwrap());
+    evicted(store, agent).await;
+    // Print the file and the process command lines so a failure says which half broke.
+    let job = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        // PID 1 is the sandbox's own init (`sleep infinity` in images without
+        // swarmy-init), so skip it and print every other command line.
+        r#"cat /requirement-release; echo ---; for f in /proc/[0-9]*/cmdline; do [ "$f" = /proc/1/cmdline ] && continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done"#,
+    )
+    .await;
+    let metadata = completed(store, &job).await;
+    let out = metadata["stdout"].as_str().unwrap_or_default();
+    let (file, processes) = out.split_once("---\n").unwrap_or((out, ""));
+    assert_eq!(file.trim(), "after-process", "final checkpoint lost: {out}");
+    if let Some(line) = processes.lines().find(|line| line.trim() == "sleep 300") {
+        panic!("the process started before the release survived it: {line}");
+    }
+    let placement = store.get_by_agent(agent).await.unwrap().unwrap();
+    assert_eq!(
+        placement.last_change_reason,
+        swarmy_core::PlacementChangeReason::RequirementChange
+    );
 }
 
 /// Both lease-mismatch orders must fail closed before any sandbox starts.
@@ -522,6 +729,179 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
     );
 }
 
+/// A node API outage outlasts the placement: the node reports the loss and
+/// discards the computer at once, and other sandboxes keep starting while the
+/// discarded disk's writer release cannot reach the node API.
+async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, base: ManifestId) {
+    let started = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_start",
+        serde_json::json!({"command": "exec sleep 300"}),
+    )
+    .await;
+    assert!(started["process_id"].is_string());
+    let old = store.get_by_agent(agent).await.unwrap().unwrap();
+    node.pause_api();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one-second outage length is the assertion"
+    )]
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    node.resume_api().await;
+    let short = dispatch(store, bus, node.id, agent, "true").await;
+    completed(store, &short).await;
+    assert_eq!(
+        store.get_by_agent(agent).await.unwrap().unwrap().epoch,
+        old.epoch
+    );
+
+    let path = device(node, agent);
+    let other = VolumeId::from_ulid(ulid::Ulid::generate());
+    store.create_volume(other, base).await.unwrap();
+    let expires = store.get_by_agent(agent).await.unwrap().unwrap().expires_at;
+    node.pause_api();
+    // The placement lease is 3 s; the loss is reported within a few seconds
+    // of its expiry, not after a node API request deadline.
+    swarmy_testkit::eventually(
+        "placement lease lost during API outage",
+        Duration::from_secs(10),
+        async || {
+            let past_deadline =
+                jiff::Timestamp::now() >= expires.checked_add(Duration::from_secs(1)).unwrap();
+            let log =
+                std::fs::read_to_string(node.root.path().join("node.log")).unwrap_or_default();
+            (past_deadline && log.contains("placement lease lost")).then_some(())
+        },
+    )
+    .await;
+    // Another sandbox starts while the discard's writer release cannot reach
+    // the node API, so the discard does not hold the runtime's lifecycle gate.
+    let started = std::time::Instant::now();
+    let unrelated = node.create(other).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "create waited {:?} behind the discard",
+        started.elapsed()
+    );
+    discarded(node, agent, &path, &unrelated).await;
+    node.resume_api().await;
+    node.destroy(unrelated).await;
+    discarded_writer_expires(store, agent).await;
+    let next = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        "test $(cat /persistent) = durable",
+    )
+    .await;
+    completed(store, &next).await;
+    assert!(store.get_by_agent(agent).await.unwrap().unwrap().epoch > old.epoch);
+}
+
+/// The lapsed agent's computer is gone. A sandbox created meanwhile may reuse
+/// the freed NBD device, so the old device counts as discarded when it is free
+/// or now belongs to that sandbox.
+async fn discarded(node: &Node, agent: AgentId, path: &Path, unrelated: &Sandbox) {
+    let reused = device(node, unrelated.agent_id) == path;
+    let gone = |part: &str| {
+        !node
+            .root
+            .path()
+            .join(format!(".swarmy/node/{part}/{agent}"))
+            .exists()
+    };
+    swarmy_testkit::eventually(
+        "outage discards device",
+        Duration::from_secs(10),
+        async || {
+            (if reused {
+                gone("runc") && gone("bundles")
+            } else {
+                is_absent(node, agent, path)
+            })
+            .then_some(())
+        },
+    )
+    .await;
+}
+
+/// The discard's release could not reach the node API, so the old writer
+/// lease runs out on its own before the next epoch can bind the disk.
+async fn discarded_writer_expires(store: &Store, agent: AgentId) {
+    let volume = VolumeId::from_ulid(agent.as_ulid());
+    if let Some(lease) = store
+        .get_volume(volume)
+        .await
+        .unwrap()
+        .unwrap()
+        .writer_lease
+    {
+        swarmy_testkit::eventually(
+            "discarded writer lease expires",
+            lease
+                .expires_at
+                .duration_since(jiff::Timestamp::now())
+                .try_into()
+                .unwrap_or(Duration::ZERO)
+                + Duration::from_secs(10),
+            async || (jiff::Timestamp::now() >= lease.expires_at).then_some(()),
+        )
+        .await;
+    }
+}
+
+async fn restart_waits_for_its_old_epoch(
+    settings: swarmy_config::Settings,
+    store: &Store,
+    base: ManifestId,
+) {
+    let (mut node, bus) = start(settings, store, base, 10).await;
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let first = dispatch(
+        store,
+        &bus,
+        node.id,
+        agent,
+        "touch /restart-started; sleep 100",
+    )
+    .await;
+    written(&node, agent, "restart-started").await;
+    assert!(!store.tool_completed(first.request_id).await.unwrap());
+    let old = store.get_by_agent(agent).await.unwrap().unwrap();
+    let writer_expiry = store
+        .get_volume(VolumeId::from_ulid(agent.as_ulid()))
+        .await
+        .unwrap()
+        .unwrap()
+        .writer_lease
+        .unwrap()
+        .expires_at;
+    node.kill();
+    node.start();
+    node.ready(store, jiff::Timestamp::now()).await;
+    // This direct NATS fixture has no worker to re-dispatch a job whose old
+    // placement expires. Wait before dispatching so its fence names the new epoch.
+    swarmy_testkit::eventually(
+        "restarted node leaves old epoch and writer to expire",
+        Duration::from_secs(90),
+        async || {
+            (jiff::Timestamp::now() >= old.expires_at && jiff::Timestamp::now() >= writer_expiry)
+                .then_some(())
+        },
+    )
+    .await;
+    let second = dispatch(store, &bus, node.id, agent, "true").await;
+    completed(store, &second).await;
+    let next = store.get_by_agent(agent).await.unwrap().unwrap();
+    assert_eq!(next.epoch, old.epoch + 1);
+    assert!(next.last_changed_at >= old.expires_at);
+    node.stop().await;
+}
+
 async fn crash(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
     let job = dispatch(
         store,
@@ -586,7 +966,6 @@ async fn takeover(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, dur
     if !during_call {
         completed(store, &active).await;
     }
-    let placement = store.get_by_agent(agent).await.unwrap().unwrap();
     let path = device(node, agent);
     let pid = node.child.as_ref().unwrap().id().to_string();
     assert!(
@@ -597,11 +976,16 @@ async fn takeover(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, dur
             .success()
     );
     // The frozen node must miss heartbeats until its placement expires;
-    // poll the expiry instead of assuming a fixed freeze covers it.
-    swarmy_testkit::eventually(
+    // poll the expiry instead of assuming a fixed freeze covers it. Reread
+    // the placement each time: the node API may still answer a sync the
+    // node sent just before it froze and renew the placement.
+    let placement = swarmy_testkit::eventually(
         "frozen placement expires",
         Duration::from_secs(30),
-        async || (jiff::Timestamp::now() >= placement.expires_at).then_some(()),
+        async || {
+            let placement = store.get_by_agent(agent).await.unwrap().unwrap();
+            (jiff::Timestamp::now() >= placement.expires_at).then_some(placement)
+        },
     )
     .await;
     let mut other = store.get_node(node.id).await.unwrap().unwrap();

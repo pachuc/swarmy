@@ -19,7 +19,7 @@ delete the file and say why in the commit.
 | [agent-disk-guidance](agent-disk-guidance.md) | Tell agents which paths are durable and which are scratch, generated from the image |
 | [agent-fork](agent-fork.md) | Fork an agent, including its computer, into a new agent |
 | [transcript-retrieval](transcript-retrieval.md) | Search over archived conversation history instead of only the summary chain |
-| [cost-view](cost-view.md) | Cost per agent across tokens, compute hours, and storage |
+| [cost-view](cost-view.md) | Cost per agent across storage, with budgets |
 | [tool-diagnostics-and-permissions](tool-diagnostics-and-permissions.md) | Diagnostics appended to edit results and permission escalation for dangerous tools |
 | [gui-client](gui-client.md) | Desktop and mobile clients with chat, channels, and direct messages to agents |
 | [documentation-site](documentation-site.md) | A public documentation site from the prototype outside this repository |

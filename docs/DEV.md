@@ -82,13 +82,13 @@ scheduler, worker, gateway, and API under a background CLI supervisor. It return
 when their logs report readiness and prints process ids. The default fake
 provider replies `Hello from swarmy!` without credentials. Builds are separate
 from startup; build again after changing Rust code. The CLI and the services
-(scheduler, worker, gateway, API) must live
+(scheduler, worker, gateway, API, node API) must live
 in the same directory. You can add `target/debug` to your shell's executable
 search path to use `swarmy` directly. When using a system client library, omit `SWARMY_FDB_LIB_DIR`. With a custom
 install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
-./target/debug/swarmy swarm logs dev           # follow all four service logs
+./target/debug/swarmy swarm logs dev           # follow all five service logs
 ./target/debug/swarmy swarm logs dev worker    # follow one service; Ctrl-C ends tailing
 ./target/debug/swarmy swarm logs dev supervisor
 ```
@@ -174,7 +174,11 @@ swarmy agent show reviewer --json
 Use `--system-prompt TEXT` for an inline prompt or `--system-prompt-file PATH`
 for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
 `agent create` and `agent set` also take `--memory MIB` for the sandbox memory
-limit and `--gpu none|shared|dedicated` for the placement GPU requirement.
+limit and `--gpu none|shared|dedicated` for the GPU requirement enforced by
+placement and admission ([GPU nodes](swarms.md#gpu-nodes)).
+`--gpu-reason TEXT` records why a shared or dedicated requirement was set; `agent show` prints it with session `-`, and an autoscaled GPU machine started for the agent takes it as its cause.
+`--allow-gpu-request true|false` lets the agent change its own GPU requirement
+with the `request_gpu` and `release_gpu` tools.
 `agent set NAME` changes only supplied fields. Changes apply to the next inference
 in every existing or future session of that agent; an already submitted request
 keeps its settings. Unset fields use the current stack defaults, as do ephemeral
@@ -252,16 +256,16 @@ The connection keys are `[store] cluster_file`, `[bus] nats_url`, `[s3] endpoint
 `[s3] access_key`, `[s3] secret_key`, `[s3] bucket`, `[s3] prefix`,
 `[s3] region`, and `[s3] conditional_create`. `[s3] prefix` defaults to empty. Use it to select a namespace
 within the bucket; see the [namespace and migration
-rules](../crates/swarmy-store/src/objects.rs). Set `[s3] conditional_create`
+rules](../crates/swarmy-volume/src/objects.rs). Set `[s3] conditional_create`
 to `false` (or `SWARMY_S3_CONDITIONAL_CREATE=false`) for object stores that
 reject create-only PUTs; chunks and manifests are content-addressed, so the
 plain-PUT fallback is safe. Additional settings are
-`[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
+`[node_api] listen`, `[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
 `[scheduler] ephemeral_retention_secs`, `[scheduler] placement_lease_secs`,
 `[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
 `[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
-`[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
-`[inference] max_wait_secs`, `[inference] max_backoff_secs`,
+`[sandbox] idle_secs`, `[sandbox] boot_prefetch_concurrency` (default 32, clamped to 1 when zero), `[gc] grace_secs`, `[gc] interval_secs`,
+`[scheduler] max_session_wait_secs`, `[inference] max_backoff_secs`,
 `[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
 `[context] system_prompt`. The optional `[context] summarize_at` and
 `[context] context_window` override the compaction threshold and the known
@@ -312,7 +316,7 @@ make install
 ```
 
 `make install` is `make install-client` plus `make install-core`. The client
-links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
+links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, and vol) still links it. `swarmy-node` links no FoundationDB library; `make check-deps` verifies normal dependency trees for `swarmyd`, `swarmy-volume`, and `swarmy-sandbox`. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
 builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client for swarm buckets. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
@@ -333,7 +337,11 @@ the installer and process supervisor currently target Linux.
 Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
 `iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
 `sudo apt-get install runc passt iproute2 util-linux` before
-starting `swarmy-core node`.
+starting `swarmy-node`. Local swarms run the node API as the `node-api`
+control service. Issue a credential with `swarmy-core node-credential issue <node id>
+> ~/.swarmy/node-token`, run `chmod 600 ~/.swarmy/node-token`, and set
+`SWARMY_NODE_TOKEN_FILE` to that path. Set `SWARMY_NODE_API_URL` when the API
+is not on `127.0.0.1:8743`. Nodes use these settings for every registration and request.
 
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
@@ -363,7 +371,7 @@ rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. The CLI embeds t
 
 ### Service binary
 
-`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node-api`, and `vol` roles. Run `swarmy-core --version` to check its identity. The separate `swarmy-node` binary needs root and NBD.
 
 ### Diagnose an installation
 
@@ -399,7 +407,7 @@ developer volume tools live in the node daemon instead: run them as
 [volume tools](#volume-tools)). `models probe` uses the API host's credential resolver, so a laptop without
 provider keys can probe credentials stored in the swarm. Scripted `fake` probes read fixture files on the API host. The separately
 installed `swarmy-auth` helper handles interactive `auth login` and `auth import`;
-both save credentials through the API. Node installs omit it.
+both save credentials through the API. The helper opens the same SSH tunnel as the CLI for swarms served over SSH; `swarmy --swarm NAME auth import` and `swarmy --swarm NAME auth login` pass the selected swarm to it. Node installs omit it.
 
 ## Release builds
 
@@ -412,8 +420,9 @@ macOS 15.
 
 Each client archive is named `swarmy-<target>.tar.gz` and contains
 `swarmy-<target>/swarmy`. The Linux core archives are named
-`swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`
-and `swarmy-core-<target>/libfdb_c.so`. The core loads its bundled
+`swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`,
+`swarmy-core-<target>/swarmy-node` and `swarmy-core-<target>/libfdb_c.so`.
+The node binary loads no FoundationDB library. The core loads its bundled
 FoundationDB 7.3.79 client through an `$ORIGIN` rpath; keep the two files
 together. Packaging checks the upstream library against its published SHA-256
 checksum. Nodes need no FoundationDB installation for this binary.
@@ -667,6 +676,8 @@ intermediate response calls `get_time`; the last response is the fixed answer
 `chaos session complete`. Each gateway handles one call at a time, making the
 allowed cost of each gateway kill at most one additional provider call.
 
+Images registered through the API are now primed by the image probe; chaos priming still covers images registered directly through the store. With `--image`, `--prime-boot-set` runs one unmeasured session, waits for its boot set, then restarts the node with an empty chunk cache before measuring cold starts.
+
 Use `--schedulers`, `--workers`, and `--gateways` to change process counts.
 `--min-interval-ms` and `--max-interval-ms` set the inclusive random interval range
 (default 100 to 350 ms). `--latency-ms` delays each fake delta (default 100 ms,
@@ -775,3 +786,8 @@ has the same durability as other home-disk files: use `checkpoint` when facts
 must survive node failure. The default prompt explains how to save memory and
 that conversations may be summarized; `{memory_dir}` in a configured system
 prompt expands to the selected directory.
+
+The root-only `scripts/node-suites/latency.sh` checks warm tool overhead below
+1 s at 175 ms round trip and below 2 s at 400 ms. It gates cold start below
+60 s at 175 ms and every node API request below one round trip plus 150 ms;
+cold start at 400 ms is reported without a gate.

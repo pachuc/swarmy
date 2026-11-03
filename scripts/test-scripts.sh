@@ -9,8 +9,11 @@ python3 scripts/test_repo_metrics.py
 python3 -m unittest discover -s benchmarks -p 'test_*.py'
 python3 images/base-desktop/tests/browser-helper.py
 python3 -m unittest discover -s images/base-desktop/tests -p 'test_*.py'
+python3 -m unittest discover -s images/common/tests -p 'test_*.py'
 bash scripts/test-desktop-agent-check.sh
+bash scripts/test-gpu-proof.sh
 python3 crates/swarmyd/tests/files_test.py
+bash scripts/test-check-node-deps.sh
 bash scripts/test-check-openapi-compat.sh
 bash scripts/test-check-anyhow-in-libraries.sh
 bash scripts/test-check-test-sleep-ban.sh
@@ -18,6 +21,7 @@ bash scripts/test-check-docs-accuracy.sh
 bash scripts/test-check-public-ids.sh
 bash scripts/test-check-ast-grep-rules.sh
 bash scripts/test-remote-upgrade.sh
+bash scripts/test-remote-services.sh
 bash scripts/test-remote-s3-env.sh
 bash scripts/test-migrate-config.sh
 bash scripts/test-install.sh

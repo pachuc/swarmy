@@ -3,7 +3,8 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 use swarmy_core::{
-    AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
+    AgentId, GpuRequirement, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord,
+    SandboxRequirements, decode,
 };
 
 use crate::{Result, Store, StoreError, check_limit, read, scan, scan_all, write};
@@ -22,6 +23,42 @@ pub(crate) struct PlacementHosting {
     claimed: Option<Timestamp>,
     last_renewed: Option<Timestamp>,
     pub(crate) failure_estimate: Option<Timestamp>,
+    /// Set when requirements changed; the hosting node releases at its next renewal.
+    pub(crate) release_requested: Option<Timestamp>,
+}
+
+/// A node's current placement commitments.
+#[derive(Default)]
+struct NodeLoad {
+    committed_bytes: u64,
+    shared_gpu: u32,
+    dedicated_gpu: u32,
+}
+
+fn admit_gpu(node: &NodeRecord, requirement: GpuRequirement, load: &NodeLoad) -> Result<()> {
+    let detail = match requirement {
+        GpuRequirement::None => return Ok(()),
+        _ if node.gpu_count() == 0 => format!("node {} has no GPU", node.node_id),
+        GpuRequirement::Shared if load.dedicated_gpu > 0 => {
+            format!("node {} hosts a dedicated GPU sandbox", node.node_id)
+        }
+        GpuRequirement::Dedicated if load.shared_gpu + load.dedicated_gpu > 0 => format!(
+            "node {} already hosts {} GPU sandboxes",
+            node.node_id,
+            load.shared_gpu + load.dedicated_gpu
+        ),
+        _ => return Ok(()),
+    };
+    Err(StoreError::Domain(crate::DomainError::GpuUnavailable {
+        detail,
+    }))
+}
+
+/// Parallel tombstone and snapshot placement reads for an identity fence.
+pub(crate) struct PlacementFence {
+    agent: AgentId,
+    deleted: Result<bool>,
+    current: Result<Option<PlacementRecord>>,
 }
 
 impl Store {
@@ -38,11 +75,13 @@ impl Store {
     /// Rejects deleted computers and storage failures.
     pub async fn report_scratch(&self, agent: AgentId, record: &ScratchRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            self.check_computer(&trx, agent).await?;
-            if read::<PlacementRecord>(&trx, &self.keys().placement(agent))
-                .await?
-                .is_some_and(|placement| placement.node_id != record.node_id)
-            {
+            let placement_key = self.keys().placement(agent);
+            let (computer, placement) = futures::join!(
+                self.check_computer(&trx, agent),
+                read::<PlacementRecord>(&trx, &placement_key),
+            );
+            computer?;
+            if placement?.is_some_and(|placement| placement.node_id != record.node_id) {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             write(&trx, &self.keys().scratch(agent), record)
@@ -81,11 +120,54 @@ impl Store {
         expected: &PlacementRecord,
     ) -> Result<Option<Timestamp>> {
         self.transaction(|trx| async move {
-            self.checked_placement(&trx, expected).await?;
-            Ok(self
-                .read_placement_hosting(&trx, expected)
-                .await?
-                .and_then(|hosting| hosting.failure_estimate))
+            let (current, hosting) = futures::join!(
+                self.checked_placement(&trx, expected),
+                self.read_placement_hosting(&trx, expected),
+            );
+            current?;
+            Ok(hosting?.and_then(|hosting| hosting.failure_estimate))
+        })
+        .await
+    }
+
+    pub(crate) async fn request_release_in(
+        &self,
+        trx: &Transaction,
+        agent: AgentId,
+    ) -> Result<bool> {
+        if read::<PlacementRecord>(trx, &self.keys().placement(agent))
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let mut hosting = read::<PlacementHosting>(trx, &self.keys().placement_hosting(agent))
+            .await?
+            .unwrap_or_default();
+        hosting.release_requested.get_or_insert_with(|| self.now());
+        write(trx, &self.keys().placement_hosting(agent), &hosting)?;
+        Ok(true)
+    }
+
+    /// Ask the hosting node to checkpoint and release its computer on renewal.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn request_placement_release(&self, agent: AgentId) -> Result<bool> {
+        self.transaction(|trx| async move { self.request_release_in(&trx, agent).await })
+            .await
+    }
+
+    /// Whether this placement's node was asked to release it.
+    /// # Errors
+    /// Rejects replaced placements and storage failures.
+    pub async fn placement_release_requested(&self, placement: &PlacementRecord) -> Result<bool> {
+        self.transaction(|trx| async move {
+            let (current, hosting) = futures::join!(
+                self.checked_placement(&trx, placement),
+                self.read_placement_hosting(&trx, placement),
+            );
+            current?;
+            Ok(hosting?.is_some_and(|h| h.release_requested.is_some()))
         })
         .await
     }
@@ -97,11 +179,12 @@ impl Store {
     /// Rejects stale or expired placements and storage failures.
     pub async fn claim_placement(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            self.check_live_placement(&trx, expected).await?;
-            let mut hosting = self
-                .read_placement_hosting(&trx, expected)
-                .await?
-                .unwrap_or_default();
+            let (live, hosting) = futures::join!(
+                self.check_live_placement(&trx, expected),
+                self.read_placement_hosting(&trx, expected),
+            );
+            live?;
+            let mut hosting = hosting?.unwrap_or_default();
             hosting.claimed.get_or_insert_with(|| self.now());
             write(
                 &trx,
@@ -146,20 +229,25 @@ impl Store {
         .await
     }
 
-    async fn requirement_bytes(&self, trx: &Transaction, agent: AgentId) -> Result<u64> {
-        let ephemeral: Option<u64> = read(trx, &self.keys().computer_memory(agent)).await?;
-        let mib = if let Some(mib) = ephemeral {
-            mib
-        } else {
-            self.read_agent(trx, agent)
-                .await?
-                .map_or(768, |record| record.requirements.memory_mib)
-        };
-        mib.checked_mul(1024 * 1024)
-            .filter(|bytes| *bytes > 0)
-            .ok_or(StoreError::Domain(
-                crate::DomainError::InvalidMemoryRequirement,
-            ))
+    async fn requirements(&self, trx: &Transaction, agent: AgentId) -> Result<SandboxRequirements> {
+        let memory_key = self.keys().computer_memory(agent);
+        let (ephemeral, record) =
+            futures::join!(read::<u64>(trx, &memory_key), self.read_agent(trx, agent),);
+        if let Some(memory_mib) = ephemeral? {
+            return Ok(SandboxRequirements {
+                memory_mib,
+                gpu: GpuRequirement::None,
+            });
+        }
+        Ok(record?.map_or_else(SandboxRequirements::default, |record| record.requirements))
+    }
+
+    /// Requirements placement must satisfy for this computer.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn computer_requirements(&self, agent: AgentId) -> Result<SandboxRequirements> {
+        self.transaction(|trx| async move { self.requirements(&trx, agent).await })
+            .await
     }
 
     /// Committed sandbox memory in bytes; expired placements remain committed.
@@ -175,32 +263,49 @@ impl Store {
     /// released by a process that accounts for memory differently, which
     /// happened during the upgrade that introduced memory budgets.
     async fn committed_bytes(&self, trx: &Transaction, node: NodeId) -> Result<u64> {
-        self.committed_bytes_excluding(trx, node, AgentId::from_ulid(ulid::Ulid::nil()))
-            .await
+        Ok(self
+            .node_load(trx, node, AgentId::from_ulid(ulid::Ulid::nil()))
+            .await?
+            .committed_bytes)
     }
 
-    /// The committed sum without one agent's own placement, so a takeover on
-    /// the same node is not charged twice for the computer it is replacing.
-    async fn committed_bytes_excluding(
+    /// Derive memory and GPU occupancy in one scan of the node's placement rows.
+    /// Read the requirements of the scanned placements together before summing them.
+    async fn node_load(
         &self,
         trx: &Transaction,
         node: NodeId,
         exclude: AgentId,
-    ) -> Result<u64> {
+    ) -> Result<NodeLoad> {
         let (begin, end) = self.keys().placement_by_node_space(node).range();
-        let mut total: u64 = 0;
+        let mut records = Vec::new();
         for (_, value) in scan_all(trx, (begin, end)).await? {
             let record: PlacementRecord = decode(&value)?;
-            if record.agent_id == exclude {
-                continue;
+            if record.agent_id != exclude {
+                records.push(record);
             }
-            total = total
-                .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
+        }
+        let requirements = futures::future::try_join_all(
+            records
+                .iter()
+                .map(|record| self.requirements(trx, record.agent_id)),
+        )
+        .await?;
+        let mut load = NodeLoad::default();
+        for (record, requirements) in records.iter().zip(requirements) {
+            load.committed_bytes = load
+                .committed_bytes
+                .checked_add(requirement_bytes(requirements)?)
                 .ok_or(StoreError::Storage(
                     crate::StorageError::MemoryCapacityOverflow,
                 ))?;
+            match record.gpu {
+                GpuRequirement::None => {}
+                GpuRequirement::Shared => load.shared_gpu += 1,
+                GpuRequirement::Dedicated => load.dedicated_gpu += 1,
+            }
         }
-        Ok(total)
+        Ok(load)
     }
 
     async fn reserve_computer(
@@ -208,15 +313,20 @@ impl Store {
         trx: &Transaction,
         node: NodeId,
         agent: AgentId,
-    ) -> Result<()> {
-        let registered: NodeRecord = read(trx, &self.keys().node(node))
-            .await?
-            .ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
+    ) -> Result<GpuRequirement> {
+        let key = self.keys().placement_count(node);
+        let node_key = self.keys().node(node);
+        let (registered, count, requirements, load) = futures::join!(
+            read::<NodeRecord>(trx, &node_key),
+            read::<u32>(trx, &key),
+            self.requirements(trx, agent),
+            self.node_load(trx, node, agent),
+        );
+        let registered = registered?.ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
         if !registered.roles.contains(&NodeRole::Sandbox) {
             return Err(StoreError::Domain(crate::DomainError::NodeNotSandbox));
         }
-        let key = self.keys().placement_count(node);
-        let count: u32 = read(trx, &key).await?.unwrap_or(0);
+        let count = count?.unwrap_or(0);
         if count >= registered.capacity.sandboxes {
             return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
                 detail: format!(
@@ -225,17 +335,25 @@ impl Store {
                 ),
             }));
         }
-        let bytes = self.requirement_bytes(trx, agent).await?;
-        let committed = self.committed_bytes_excluding(trx, node, agent).await?;
-        if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
+        let requirements = requirements?;
+        let bytes = requirement_bytes(requirements)?;
+        let load = load?;
+        if bytes
+            > registered
+                .capacity
+                .memory_bytes
+                .saturating_sub(load.committed_bytes)
+        {
             return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
                 detail: format!(
-                    "agent {agent} needs {bytes} bytes but node {node} has {committed} of {} bytes committed",
-                    registered.capacity.memory_bytes
+                    "agent {agent} needs {bytes} bytes but node {node} has {} of {} bytes committed",
+                    load.committed_bytes, registered.capacity.memory_bytes
                 ),
             }));
         }
-        write(trx, &key, &(count + 1))
+        admit_gpu(&registered, requirements.gpu, &load)?;
+        write(trx, &key, &(count + 1))?;
+        Ok(requirements.gpu)
     }
 
     async fn free_computer(&self, trx: &Transaction, node: NodeId, _agent: AgentId) -> Result<()> {
@@ -252,7 +370,8 @@ impl Store {
         )
     }
 
-    fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
+    /// Renewal writes only the lease and node index, not the identity fence.
+    fn write_placement_lease(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
         write(trx, &self.keys().placement(record.agent_id), record)?;
         write(
             trx,
@@ -260,7 +379,11 @@ impl Store {
                 .keys()
                 .placement_by_node(record.node_id, record.agent_id),
             record,
-        )?;
+        )
+    }
+
+    fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
+        self.write_placement_lease(trx, record)?;
         write(
             trx,
             &self.keys().placement_epoch(record.agent_id),
@@ -268,16 +391,60 @@ impl Store {
         )
     }
 
+    /// Issue both reads together; renewal never writes the epoch key.
+    pub(crate) async fn read_placement_fence(
+        &self,
+        trx: &Transaction,
+        agent: AgentId,
+    ) -> PlacementFence {
+        let key = self.keys().placement(agent);
+        let (deleted, current) = futures::join!(
+            self.computer_deleted(trx, agent),
+            crate::read_snapshot::<PlacementRecord>(trx, &key),
+        );
+        PlacementFence {
+            agent,
+            deleted,
+            current,
+        }
+    }
+
+    /// Snapshot the lease, conflicting on identity instead of expiry. Place,
+    /// takeover, and release write the epoch key; deletion writes the tombstone.
+    /// Renewal extends only a live lease, so a live snapshot stays live and an
+    /// expired snapshot cannot become live through renewal.
+    pub(crate) fn check_placement_fence(
+        &self,
+        trx: &Transaction,
+        fence: PlacementFence,
+        node: NodeId,
+        epoch: u64,
+    ) -> Result<()> {
+        if fence.deleted? {
+            return Err(StoreError::Domain(crate::DomainError::ComputerDeleted));
+        }
+        let current = fence
+            .current?
+            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
+        if current.node_id != node || current.epoch != epoch || current.expires_at <= self.now() {
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
+        }
+        crate::add_read_conflict_key(trx, &self.keys().placement_epoch(fence.agent))
+    }
+
     pub(crate) async fn checked_placement(
         &self,
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<PlacementRecord> {
-        self.check_computer(trx, expected.agent_id).await?;
-        let current: PlacementRecord = read(trx, &self.keys().placement(expected.agent_id))
-            .await?
-            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
-        if current.node_id != expected.node_id || current.epoch != expected.epoch {
+        let placement_key = self.keys().placement(expected.agent_id);
+        let (computer, current) = futures::join!(
+            self.check_computer(trx, expected.agent_id),
+            read::<PlacementRecord>(trx, &placement_key),
+        );
+        computer?;
+        let current = current?.ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
+        if !current.same_grant(expected) {
             return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(current)
@@ -288,10 +455,8 @@ impl Store {
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<()> {
-        if self.checked_placement(trx, expected).await?.expires_at <= self.now() {
-            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-        }
-        Ok(())
+        let fence = self.read_placement_fence(trx, expected.agent_id).await;
+        self.check_placement_fence(trx, fence, expected.node_id, expected.epoch)
     }
 
     /// Validate the current epoch before local execution.
@@ -305,12 +470,14 @@ impl Store {
     }
 
     /// Place an absent computer, advancing its retained epoch counter.
+    /// Records machine assignment intervals for GPU placements on joined elastic machines.
     /// Checking absence and the counter in one transaction prevents duplicate grants.
-    /// Recreating after release records Eviction; the first placement records Initial.
+    /// Recreating after release records `Eviction`, or `RequirementChange` after
+    /// a requested release; the first placement records `Initial`.
     /// Expired placements still consume capacity until released or taken over.
     /// # Errors
     /// Rejects existing placements, invalid expiry, missing or full nodes,
-    /// nodes without the sandbox role, epoch overflow, and storage errors.
+    /// nodes without the sandbox role, GPU admission conflicts, epoch overflow, and storage errors.
     pub async fn place(
         &self,
         agent: AgentId,
@@ -318,34 +485,50 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
-            self.check_computer(&trx, agent).await?;
+            let keys = self.keys();
+            let (placement_key, epoch_key, next_key) = (
+                keys.placement(agent),
+                keys.placement_epoch(agent),
+                keys.placement_next_reason(agent),
+            );
+            let (computer, existing, epoch, next, gpu) = futures::join!(
+                self.check_computer(&trx, agent),
+                read::<PlacementRecord>(&trx, &placement_key),
+                read::<u64>(&trx, &epoch_key),
+                read::<PlacementChangeReason>(&trx, &next_key),
+                self.reserve_computer(&trx, node, agent),
+            );
+            computer?;
             let now = self.now();
             if expires_at <= now {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
-            if read::<PlacementRecord>(&trx, &self.keys().placement(agent))
-                .await?
-                .is_some()
-            {
+            if existing?.is_some() {
                 return Err(StoreError::Domain(crate::DomainError::PlacementExists));
             }
-            let epoch: u64 = read(&trx, &self.keys().placement_epoch(agent))
-                .await?
-                .unwrap_or(0);
-            self.reserve_computer(&trx, node, agent).await?;
+            let epoch = epoch?.unwrap_or(0);
+            let gpu = gpu?;
+            let next = next?;
+            trx.clear(&next_key);
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,
                 epoch: crate::seq_after(epoch, 1)?,
                 expires_at,
-                last_change_reason: if epoch == 0 {
+                last_change_reason: next.unwrap_or(if epoch == 0 {
                     PlacementChangeReason::Initial
                 } else {
                     PlacementChangeReason::Eviction
-                },
+                }),
                 last_changed_at: now,
+                gpu,
             };
             self.write_placement(&trx, &record)?;
+            if gpu != GpuRequirement::None
+                && let Some(machine) = self.joined_machine_in(&trx, node).await?
+            {
+                self.open_assignment_in(&trx, machine, agent, now).await?;
+            }
             write(
                 &trx,
                 &self.keys().placement_hosting(agent),
@@ -354,6 +537,35 @@ impl Store {
             Ok(record)
         })
         .await
+    }
+
+    /// Read the current lease and hosting row together before extending expiry.
+    async fn renew_in(
+        &self,
+        trx: &Transaction,
+        expected: &PlacementRecord,
+        expiry: impl Fn(&PlacementRecord) -> Result<Timestamp>,
+    ) -> Result<(PlacementRecord, PlacementHosting)> {
+        let (current, hosting) = futures::join!(
+            self.checked_placement(trx, expected),
+            self.read_placement_hosting(trx, expected),
+        );
+        let mut current = current?;
+        let now = self.now();
+        let expires_at = expiry(&current)?;
+        if current.expires_at <= now || expires_at <= current.expires_at {
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
+        }
+        let mut hosting = hosting?.ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+        hosting.last_renewed = Some(now);
+        write(
+            trx,
+            &self.keys().placement_hosting(current.agent_id),
+            &hosting,
+        )?;
+        current.expires_at = expires_at;
+        self.write_placement_lease(trx, &current)?;
+        Ok((current, hosting))
     }
 
     /// Extend a live lease held by the supplied node and epoch. The stored expiry
@@ -367,40 +579,81 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
-            let mut current = self.checked_placement(&trx, expected).await?;
-            let now = self.now();
-            if current.expires_at <= now || expires_at <= current.expires_at {
-                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-            }
-            let mut hosting = self
-                .read_placement_hosting(&trx, &current)
-                .await?
-                .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
-            hosting.last_renewed = Some(now);
-            write(
-                &trx,
-                &self.keys().placement_hosting(current.agent_id),
-                &hosting,
-            )?;
-            current.expires_at = expires_at;
-            self.write_placement(&trx, &current)?;
-            Ok(current)
+            Ok(self.renew_in(&trx, expected, |_| Ok(expires_at)).await?.0)
+        })
+        .await
+    }
+
+    /// Extend a hosting lease past both the requested and stored expiry, and
+    /// return whether its hosting row requests release.
+    /// # Errors
+    /// Rejects absent, stale or expired leases and storage errors.
+    pub async fn renew_hosted(
+        &self,
+        expected: &PlacementRecord,
+        at_least: Timestamp,
+    ) -> Result<(PlacementRecord, bool)> {
+        self.transaction(|trx| async move {
+            let (record, hosting) = self
+                .renew_in(&trx, expected, |current| {
+                    let past = current
+                        .expires_at
+                        .checked_add(std::time::Duration::from_millis(1))
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    Ok(at_least.max(past))
+                })
+                .await?;
+            Ok((record, hosting.release_requested.is_some()))
         })
         .await
     }
 
     /// Clear a live placement and its node index, returning its capacity.
+    /// Records machine assignment intervals for GPU placements on joined elastic machines.
     /// The epoch counter survives release so old tokens can never become valid again.
     /// # Errors
     /// Rejects absent, expired, or replaced leases and storage errors.
     pub async fn release(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            let current = self.checked_placement(&trx, expected).await?;
-            if current.expires_at <= self.now() {
+            let count_key = self.keys().placement_count(expected.node_id);
+            let placement_key = self.keys().placement(expected.agent_id);
+            let epoch_key = self.keys().placement_epoch(expected.agent_id);
+            let (computer, current, hosting, _, retained) = futures::join!(
+                self.check_computer(&trx, expected.agent_id),
+                read::<PlacementRecord>(&trx, &placement_key),
+                self.read_placement_hosting(&trx, expected),
+                read::<u32>(&trx, &count_key),
+                read::<u64>(&trx, &epoch_key),
+            );
+            computer?;
+            let Some(current) = current? else {
+                return if retained? == Some(expected.epoch) {
+                    Ok(())
+                } else {
+                    Err(StoreError::Fence(crate::FenceError::PlacementMismatch))
+                };
+            };
+            if !current.same_grant(expected) || current.expires_at <= self.now() {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
+            }
+            if hosting?.is_some_and(|h| h.release_requested.is_some()) {
+                write(
+                    &trx,
+                    &self.keys().placement_next_reason(current.agent_id),
+                    &PlacementChangeReason::RequirementChange,
+                )?;
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
+            if current.gpu != GpuRequirement::None {
+                self.close_assignment_for_node_in(
+                    &trx,
+                    current.node_id,
+                    current.agent_id,
+                    self.now(),
+                )
+                .await?;
+            }
             trx.clear(&self.keys().placement(current.agent_id));
             trx.clear(&self.keys().placement_hosting(current.agent_id));
             trx.clear(&self.keys().placement_address(current.agent_id));
@@ -409,6 +662,12 @@ impl Store {
                     .keys()
                     .placement_by_node(current.node_id, current.agent_id),
             );
+            // Snapshot fences conflict with release even though the epoch value is retained.
+            write(
+                &trx,
+                &self.keys().placement_epoch(current.agent_id),
+                &current.epoch,
+            )?;
             Ok(())
         })
         .await
@@ -419,7 +678,7 @@ impl Store {
     /// Competing takeovers conflict on the placement and only one can commit.
     /// # Errors
     /// Rejects live or replaced placements, invalid expiry, unavailable capacity,
-    /// missing nodes, epoch overflow, and storage errors.
+    /// missing nodes, GPU admission conflicts, epoch overflow, and storage errors.
     pub async fn take_over(
         &self,
         expected: &PlacementRecord,
@@ -442,7 +701,11 @@ impl Store {
                     .keys()
                     .placement_by_node(current.node_id, current.agent_id),
             );
-            self.reserve_computer(&trx, node, current.agent_id).await?;
+            if current.gpu != GpuRequirement::None {
+                self.close_assignment_for_node_in(&trx, current.node_id, current.agent_id, now)
+                    .await?;
+            }
+            let gpu = self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self
                 .read_placement_hosting(&trx, &current)
                 .await?
@@ -461,10 +724,17 @@ impl Store {
                     PlacementChangeReason::Unstarted
                 },
                 last_changed_at: now,
+                gpu,
                 ..current
             };
             trx.clear(&self.keys().placement_address(current.agent_id));
             self.write_placement(&trx, &record)?;
+            if gpu != GpuRequirement::None
+                && let Some(machine) = self.joined_machine_in(&trx, node).await?
+            {
+                self.open_assignment_in(&trx, machine, record.agent_id, now)
+                    .await?;
+            }
             write(
                 &trx,
                 &self.keys().placement_hosting(current.agent_id),
@@ -518,7 +788,12 @@ impl Store {
         trx: &Transaction,
         agent: AgentId,
     ) -> Result<()> {
+        trx.clear(&self.keys().placement_next_reason(agent));
         if let Some(current) = read::<PlacementRecord>(trx, &self.keys().placement(agent)).await? {
+            if current.gpu != GpuRequirement::None {
+                self.close_assignment_for_node_in(trx, current.node_id, agent, self.now())
+                    .await?;
+            }
             self.free_computer(trx, current.node_id, agent).await?;
             trx.clear(&self.keys().placement(agent));
             trx.clear(&self.keys().placement_hosting(agent));
@@ -526,4 +801,14 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn requirement_bytes(requirements: SandboxRequirements) -> Result<u64> {
+    requirements
+        .memory_mib
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or(StoreError::Domain(
+            crate::DomainError::InvalidMemoryRequirement,
+        ))
 }

@@ -1,13 +1,22 @@
 use foundationdb::tuple::Subspace;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, CredentialScope, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId,
-    SessionId, TimerId, VolumeId,
+    AgentId, CredentialScope, ImageTag, LeaseOwnerId, MachineId, ManifestId, MessageId, NodeId,
+    RequestId, SessionId, TimerId, VolumeId,
 };
 
-pub(crate) fn session_id(bytes: &[u8]) -> crate::Result<SessionId> {
+fn ulid_id(bytes: &[u8]) -> crate::Result<ulid::Ulid> {
     let bytes: [u8; 16] = bytes.try_into()?;
-    Ok(SessionId::from_ulid(u128::from_be_bytes(bytes).into()))
+    Ok(u128::from_be_bytes(bytes).into())
+}
+pub(crate) fn session_id(bytes: &[u8]) -> crate::Result<SessionId> {
+    Ok(SessionId::from_ulid(ulid_id(bytes)?))
+}
+pub(crate) fn machine_id(bytes: &[u8]) -> crate::Result<MachineId> {
+    Ok(MachineId::from_ulid(ulid_id(bytes)?))
+}
+pub(crate) fn agent_id(bytes: &[u8]) -> crate::Result<AgentId> {
+    Ok(AgentId::from_ulid(ulid_id(bytes)?))
 }
 
 // The store's tuple key family registry. All families have one private name
@@ -20,7 +29,9 @@ const AGENT_GITHUB_TOKEN: &str = "agent_github_token";
 const API_APPEND: &str = "api_append";
 const API_IDEMPOTENCY: &str = "api_idempotency";
 const API_SESSION_ID: &str = "api_session_id";
+const BOOT_SET: &str = "boot_set";
 const CACHE_AFFINITY: &str = "cache_affinity";
+const CAPACITY_SHORTFALL: &str = "capacity_shortfall";
 const CHUNK_REUSED: &str = "chunk_reused";
 const COMPUTER_DELETED: &str = "computer_deleted";
 const COMPUTER_MEMORY: &str = "computer_memory";
@@ -28,6 +39,9 @@ const COMPUTER_NOTICE: &str = "computer_notice";
 const COMPUTER_NOTICE_DELIVERED: &str = "computer_notice_delivered";
 const CREDENTIAL_ENTRY: &str = "credential_entry";
 const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
+const ELASTIC_CREATIONS: &str = "elastic_creations";
+const ELASTIC_GROUP: &str = "elastic_group";
+const ELASTIC_GROUP_NODE_MEMORY: &str = "elastic_group_node_memory";
 const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
 const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
 const EVENT: &str = "event";
@@ -48,15 +62,21 @@ const INFERENCE_INPUT: &str = "inference_input";
 const INFERENCE_REQUEST: &str = "inference_request";
 const INFERENCE_RETRY: &str = "inference_retry";
 const INFERENCE_RESULT: &str = "inference_result";
-const INFERENCE_WAIT: &str = "inference_wait";
-const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
+const SESSION_WAIT: &str = "session_wait";
+const SESSION_WAIT_DUE: &str = "session_wait_due";
 const INFLIGHT: &str = "inflight";
 const LEASE: &str = "lease";
 const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
+const MACHINE: &str = "machine";
+const MACHINE_ASSIGNMENT: &str = "machine_assignment";
+const MACHINE_ASSIGNMENT_BY_AGENT: &str = "machine_assignment_by_agent";
+const MACHINE_ASSIGNMENT_OPEN: &str = "machine_assignment_open";
+const MACHINE_BY_GROUP: &str = "machine_by_group";
 const MANIFEST: &str = "manifest";
 const MANIFEST_PARENT: &str = "manifest_parent";
 const METERING_HOUR: &str = "metering_hour";
 const NODE: &str = "node";
+const NODE_CREDENTIAL: &str = "node_credential";
 const PLACED_TOOL_CLAIM: &str = "placed_tool_claim";
 const PLACEMENT: &str = "placement";
 const PLACEMENT_ADDRESS: &str = "placement_address";
@@ -64,6 +84,9 @@ const PLACEMENT_BY_NODE: &str = "placement_by_node";
 const PLACEMENT_COUNT: &str = "placement_count";
 const PLACEMENT_EPOCH: &str = "placement_epoch";
 const PLACEMENT_HOSTING: &str = "placement_hosting";
+const PLACEMENT_NEXT_REASON: &str = "placement_next_reason";
+const PROVISIONER_LEASE: &str = "provisioner_lease";
+const PROVISIONER_SEQUENCE: &str = "provisioner_sequence";
 const REQUEST_TURN: &str = "request_turn";
 const ROUTE: &str = "route";
 const RUNNABLE: &str = "runnable";
@@ -88,6 +111,7 @@ const TOOL_DONE: &str = "tool_done";
 const TOOL_JOB: &str = "tool_job";
 const TOOL_PLACEMENT: &str = "tool_placement";
 const TURN: &str = "turn";
+const TURN_COMPUTER: &str = "turn_computer";
 const TURN_INFERENCE: &str = "turn_inference";
 const TURN_METRICS: &str = "turn_metrics";
 const TURN_TOOL: &str = "turn_tool";
@@ -331,21 +355,26 @@ impl<'a> Keys<'a> {
     pub(crate) fn inference_input_space(&self) -> Subspace {
         self.root.subspace(&(INFERENCE_INPUT,))
     }
-    pub(crate) fn inference_wait(&self, id: SessionId) -> Vec<u8> {
-        self.inference_wait_space()
+    pub(crate) fn capacity_shortfall(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .subspace(&(CAPACITY_SHORTFALL,))
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
-    pub(crate) fn inference_wait_space(&self) -> Subspace {
-        self.root.subspace(&(INFERENCE_WAIT,))
+    pub(crate) fn session_wait(&self, id: SessionId) -> Vec<u8> {
+        self.session_wait_space()
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
-    pub(crate) fn inference_wait_due(&self, at: Timestamp, session: SessionId) -> Vec<u8> {
-        self.inference_wait_due_space_root().pack(&(
+    pub(crate) fn session_wait_space(&self) -> Subspace {
+        self.root.subspace(&(SESSION_WAIT,))
+    }
+    pub(crate) fn session_wait_due(&self, at: Timestamp, session: SessionId) -> Vec<u8> {
+        self.session_wait_due_space_root().pack(&(
             (at.as_second(), at.subsec_nanosecond()),
             session.as_ulid().to_bytes().as_slice(),
         ))
     }
-    pub(crate) fn inference_wait_due_space_root(&self) -> Subspace {
-        self.root.subspace(&(INFERENCE_WAIT_DUE,))
+    pub(crate) fn session_wait_due_space_root(&self) -> Subspace {
+        self.root.subspace(&(SESSION_WAIT_DUE,))
     }
     pub(crate) fn inflight(&self, id: RequestId) -> Vec<u8> {
         self.inflight_space().pack(&(id.as_bytes().as_slice(),))
@@ -369,6 +398,11 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn lease_by_expiry_space_root(&self) -> Subspace {
         self.root.subspace(&(LEASE_BY_EXPIRY,))
+    }
+    pub(crate) fn boot_set(&self, manifest: ManifestId) -> Vec<u8> {
+        self.root
+            .subspace(&(BOOT_SET,))
+            .pack(&(manifest.as_ulid().to_bytes().as_slice(),))
     }
     pub(crate) fn manifest(&self, id: ManifestId) -> Vec<u8> {
         self.manifest_space()
@@ -426,12 +460,90 @@ impl<'a> Keys<'a> {
         self.root.subspace(&(METERING_HOUR,))
     }
 
+    pub(crate) fn machine(&self, id: MachineId) -> Vec<u8> {
+        self.machine_space()
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_space(&self) -> Subspace {
+        self.root.subspace(&(MACHINE,))
+    }
+    pub(crate) fn machine_assignment(
+        &self,
+        machine: MachineId,
+        agent: AgentId,
+        from: Timestamp,
+    ) -> Vec<u8> {
+        self.machine_assignment_space_root().pack(&(
+            machine.as_ulid().to_bytes().as_slice(),
+            agent.as_ulid().to_bytes().as_slice(),
+            (from.as_second(), from.subsec_nanosecond()),
+        ))
+    }
+    pub(crate) fn machine_assignment_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_ASSIGNMENT,))
+    }
+    pub(crate) fn machine_assignment_space(&self, machine: MachineId) -> Subspace {
+        self.machine_assignment_space_root()
+            .subspace(&(machine.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_assignment_by_agent(
+        &self,
+        agent: AgentId,
+        machine: MachineId,
+        from: Timestamp,
+    ) -> Vec<u8> {
+        self.machine_assignment_by_agent_space_root().pack(&(
+            agent.as_ulid().to_bytes().as_slice(),
+            machine.as_ulid().to_bytes().as_slice(),
+            (from.as_second(), from.subsec_nanosecond()),
+        ))
+    }
+    pub(crate) fn machine_assignment_by_agent_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_ASSIGNMENT_BY_AGENT,))
+    }
+    pub(crate) fn machine_assignment_by_agent_space(&self, agent: AgentId) -> Subspace {
+        self.machine_assignment_by_agent_space_root()
+            .subspace(&(agent.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_assignment_open(&self, machine: MachineId, agent: AgentId) -> Vec<u8> {
+        self.machine_assignment_open_space_root().pack(&(
+            machine.as_ulid().to_bytes().as_slice(),
+            agent.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+    pub(crate) fn machine_assignment_open_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_ASSIGNMENT_OPEN,))
+    }
+    pub(crate) fn machine_assignment_open_space(&self, machine: MachineId) -> Subspace {
+        self.machine_assignment_open_space_root()
+            .subspace(&(machine.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_by_group(&self, group: &str, name: &str, id: MachineId) -> Vec<u8> {
+        self.machine_by_group_space_root()
+            .pack(&(group, name, id.as_ulid().to_bytes().as_slice()))
+    }
+    pub(crate) fn machine_by_group_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_BY_GROUP,))
+    }
+    pub(crate) fn machine_by_group_space(&self, group: &str) -> Subspace {
+        self.machine_by_group_space_root().subspace(&(group,))
+    }
+    pub(crate) fn machine_by_group_name_space(&self, group: &str, name: &str) -> Subspace {
+        self.machine_by_group_space(group).subspace(&(name,))
+    }
     pub(crate) fn node(&self, id: NodeId) -> Vec<u8> {
         self.node_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
     pub(crate) fn node_space(&self) -> Subspace {
         self.root.subspace(&(NODE,))
+    }
+    pub(crate) fn node_credential(&self, id: NodeId) -> Vec<u8> {
+        self.node_credential_space()
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn node_credential_space(&self) -> Subspace {
+        self.root.subspace(&(NODE_CREDENTIAL,))
     }
     pub(crate) fn placement(&self, id: AgentId) -> Vec<u8> {
         self.placement_space()
@@ -461,6 +573,26 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn request_turn_space(&self) -> Subspace {
         self.root.subspace(&(REQUEST_TURN,))
+    }
+    pub(crate) fn elastic_creations(&self) -> Vec<u8> {
+        self.root.subspace(&(ELASTIC_CREATIONS,)).pack(&())
+    }
+    pub(crate) fn provisioner_lease(&self) -> Vec<u8> {
+        self.root.subspace(&(PROVISIONER_LEASE,)).pack(&())
+    }
+    pub(crate) fn provisioner_sequence(&self) -> Vec<u8> {
+        self.root.subspace(&(PROVISIONER_SEQUENCE,)).pack(&())
+    }
+    pub(crate) fn elastic_group_node_memory(&self, group: &str) -> Vec<u8> {
+        self.root
+            .subspace(&(ELASTIC_GROUP_NODE_MEMORY,))
+            .pack(&(group,))
+    }
+    pub(crate) fn elastic_group(&self, group: &str) -> Vec<u8> {
+        self.elastic_group_space().pack(&(group,))
+    }
+    pub(crate) fn elastic_group_space(&self) -> Subspace {
+        self.root.subspace(&(ELASTIC_GROUP,))
     }
     pub(crate) fn route(&self, value: &str) -> Vec<u8> {
         self.route_space().pack(&(value,))
@@ -625,6 +757,15 @@ impl<'a> Keys<'a> {
     pub(crate) fn turn_inference_space_root(&self) -> Subspace {
         self.root.subspace(&(TURN_INFERENCE,))
     }
+    pub(crate) fn turn_computer(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
+        self.turn_computer_space_root().pack(&(
+            session.as_ulid().to_bytes().as_slice(),
+            turn.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+    pub(crate) fn turn_computer_space_root(&self) -> Subspace {
+        self.root.subspace(&(TURN_COMPUTER,))
+    }
     pub(crate) fn turn_metrics(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
         self.turn_metrics_space_root().pack(&(
             session.as_ulid().to_bytes().as_slice(),
@@ -755,6 +896,12 @@ impl<'a> Keys<'a> {
     pub(crate) fn scratch_space(&self) -> Subspace {
         self.root.subspace(&(SCRATCH,))
     }
+    pub(crate) fn placement_next_reason(&self, id: AgentId) -> Vec<u8> {
+        self.root
+            .subspace(&(PLACEMENT_NEXT_REASON,))
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+
     pub(crate) fn placement_hosting(&self, id: AgentId) -> Vec<u8> {
         self.placement_hosting_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -806,8 +953,8 @@ impl<'a> Keys<'a> {
             .subspace(&(scope.to_string(), provider))
     }
 
-    pub(crate) fn inference_wait_due_space(&self, at: Timestamp) -> Subspace {
-        self.inference_wait_due_space_root()
+    pub(crate) fn session_wait_due_space(&self, at: Timestamp) -> Subspace {
+        self.session_wait_due_space_root()
             .subspace(&((at.as_second(), at.subsec_nanosecond()),))
     }
 

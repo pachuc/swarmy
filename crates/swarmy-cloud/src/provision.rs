@@ -127,7 +127,7 @@ pub(crate) trait SwarmHost {
     ) -> Result<()>;
     async fn decommission(&self, node: &Machine) -> Result<()>;
     async fn drain(&self, node: &Machine, timeout: Duration, force: bool) -> Result<ssh::Drain>;
-    async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()>;
+    async fn revoke_node_access(&self, node: &Machine, primary: &Machine) -> Result<()>;
     async fn stop(&self, node: &Machine) -> Result<()>;
     async fn start(&self, node: &Machine) -> Result<()>;
     async fn reachable(&self, node: &Machine) -> bool;
@@ -140,7 +140,8 @@ impl SwarmHost for ssh::Ssh {
         ssh::adopt_key(node, source).await
     }
     async fn provision(&self, node: &Machine, primary: Option<&Machine>) -> Result<String> {
-        self.provision(node, primary).await
+        self.provision(node, primary.map(ssh::Primary::Remote))
+            .await
     }
     async fn services(
         &self,
@@ -168,8 +169,8 @@ impl SwarmHost for ssh::Ssh {
     async fn drain(&self, node: &Machine, timeout: Duration, force: bool) -> Result<ssh::Drain> {
         ssh::drain_node(node, timeout, force).await
     }
-    async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()> {
-        ssh::revoke_tunnel(node, primary).await
+    async fn revoke_node_access(&self, node: &Machine, primary: &Machine) -> Result<()> {
+        ssh::revoke_node_access(node, ssh::Primary::Remote(primary)).await
     }
     async fn stop(&self, node: &Machine) -> Result<()> {
         ssh::stop_units(node).await
@@ -202,12 +203,37 @@ fn machine(
         sandboxes,
         bucket: None,
         services: matches!(role, Role::Stack { services: true }),
+        node_id: None,
     }
+}
+/// A machine an elastic group created, as the provisioner joins it: a sandbox node
+/// with the group's sandboxes and storage, the swarm bucket, and its ledger node id.
+#[must_use]
+pub fn joining_node(
+    host: &RecordedHost,
+    service_user: &str,
+    sandboxes: u32,
+    local_storage: &str,
+    bucket: Option<swarmy_config::BucketSpec>,
+    node_id: swarmy_core::NodeId,
+) -> Machine {
+    let mut node = machine(host, service_user, Role::Node, sandboxes, local_storage);
+    node.bucket = bucket;
+    node.node_id = Some(node_id);
+    node
 }
 fn node(p: &Planned, user: &str, bucket: Option<&swarmy_config::BucketSpec>) -> Machine {
     let mut machine = machine(&p.host, user, p.role, p.sandboxes, &p.local_storage);
     machine.bucket = bucket.cloned();
     machine
+}
+/// Whether the swarm's nodes use an external bucket: one named in the spec's
+/// `[bucket]`, or one `OpenTofu` created for a hetzner-cloud stack group. When
+/// false, the stack host runs its own object store and nodes reach it through
+/// their SSH tunnel. `swarm up`, `node add`, and elastic joins all follow this.
+#[must_use]
+pub fn external_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> bool {
+    spec.bucket.is_some() || record.tofu_bucket.is_some()
 }
 fn bucket_spec(spec: &SwarmSpec, record: &SwarmRecord) -> Option<swarmy_config::BucketSpec> {
     let bucket = spec.bucket.as_ref()?;
@@ -224,7 +250,9 @@ fn bucket_spec(spec: &SwarmSpec, record: &SwarmRecord) -> Option<swarmy_config::
         },
     })
 }
-fn user(spec: &SwarmSpec) -> &str {
+/// The service login every host of the swarm uses.
+#[must_use]
+pub fn user(spec: &SwarmSpec) -> &str {
     spec.service_user.as_deref().unwrap_or("swarmy")
 }
 /// Exclusive nonblocking per-swarm lock, held until dropped.
@@ -361,6 +389,7 @@ async fn provision_swarm_with_backend(
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
         });
     preflight_machine_groups(&request, &record, &swarm_dir)?;
     prepare_bucket(
@@ -382,7 +411,7 @@ async fn provision_swarm_with_backend(
         primary_done,
         bucket_spec(spec, &record).as_ref(),
     )?;
-    let applied = if groups::has_module_groups(spec) {
+    if groups::has_module_groups(spec) {
         let machines = request.machines.as_ref().ok_or_else(|| {
             Error::other(format!(
                 "swarm {} has OpenTofu groups; this caller passed no OpenTofu runner",
@@ -390,14 +419,14 @@ async fn provision_swarm_with_backend(
             ))
         })?;
         let applied = groups::apply(machines, request.registry, spec, &mut record).await?;
-        sources.extend(applied.sources.clone());
-        Some(applied)
-    } else {
-        None
-    };
-    let bucket = applied
-        .and_then(|a| a.bucket)
-        .or_else(|| bucket_spec(spec, &record));
+        sources.extend(applied.sources);
+    }
+    let bucket = effective_bucket(
+        request.registry,
+        spec,
+        &record,
+        request.machines.as_ref().map(|m| m.credentials),
+    )?;
     let planned = plan(spec, sources)?;
     reconcile(&planned, &record)?;
     let primary = planned
@@ -550,8 +579,12 @@ fn service_options(
             ..Default::default()
         };
         let options = services::Options::new(&settings, true, user(spec), request.copy_credential)?;
-        Some(if request.recipe.is_some() {
-            options.with_default_image(&format!("base-ubuntu:{}", spec.name))?
+        Some(if let Some(recipe) = request.recipe {
+            options.with_default_image(&format!(
+                "{}:{}",
+                crate::node_files::recipe_image_name(recipe)?,
+                spec.name
+            ))?
         } else {
             options
         })
@@ -601,7 +634,8 @@ async fn provision_one(
         registry.write_record(record)?;
         if let Some(recipe) = request.recipe {
             cloud_out!(
-                "Building base-ubuntu:{} (this takes several minutes)",
+                "Building {}:{} (this takes several minutes)",
+                crate::node_files::recipe_image_name(recipe)?,
                 spec.name
             );
             host.build_image(&machine, &address, recipe, &spec.name)
@@ -660,20 +694,22 @@ fn effective_bucket(
     record: &SwarmRecord,
     credentials: Option<&swarmy_config::cloud::CloudCredentials>,
 ) -> Result<Option<swarmy_config::BucketSpec>> {
-    if spec.bucket.is_none() && record.tofu_bucket.is_some() {
-        let loaded;
-        let credentials = if let Some(credentials) = credentials {
-            credentials
-        } else {
-            loaded = swarmy_config::cloud::CloudCredentials::load(
-                &swarmy_config::cloud::CloudCredentials::path(registry.dirs()),
-            )?;
-            &loaded
-        };
-        Ok(groups::bucket_from(record, credentials))
-    } else {
-        Ok(bucket_spec(spec, record))
+    if !external_bucket(spec, record) {
+        return Ok(None);
     }
+    if spec.bucket.is_some() {
+        return Ok(bucket_spec(spec, record));
+    }
+    let loaded;
+    let credentials = if let Some(credentials) = credentials {
+        credentials
+    } else {
+        loaded = swarmy_config::cloud::CloudCredentials::load(
+            &swarmy_config::cloud::CloudCredentials::path(registry.dirs()),
+        )?;
+        &loaded
+    };
+    Ok(groups::bucket_from(record, credentials))
 }
 fn recorded_plan(registry: &Registry, spec: &SwarmSpec) -> Result<(SwarmRecord, Vec<Planned>)> {
     let record = registry.read_record(&spec.name)?.ok_or_else(|| {
@@ -903,7 +939,7 @@ pub struct UpgradeOptions {
     pub json: bool,
     pub cache: PathBuf,
 }
-/// Upgrade provisioned nodes before the primary host.
+/// Upgrade the primary first, then the other provisioned hosts.
 /// # Errors
 /// Reports an incomplete record, dirty checkout, or host failure.
 pub async fn upgrade_swarm(
@@ -932,6 +968,7 @@ pub async fn upgrade_swarm_with(
         options.json,
     );
     policy.dirty_paths = host.checkout_changes()?;
+    policy.swarm_name.clone_from(&spec.name);
     let bucket = effective_bucket(registry, spec, &record, None)?;
     let machines = upgrade_machines(&record, spec, bucket.as_ref());
     upgrade::run_with(&host, &machines, policy, on_summary).await
@@ -944,7 +981,6 @@ fn upgrade_machines(
 ) -> Vec<Machine> {
     record_plan(record, &spec.placement.stack)
         .iter()
-        .rev()
         .filter(|p| recorded(record, p).is_some_and(|h| h.provisioned))
         .map(|p| node(p, user(spec), bucket))
         .collect()
@@ -963,14 +999,16 @@ pub async fn logs(
         "swarmyd",
         "swarmy-stack",
         "swarmy-tunnel",
+        "swarmy-objects-tunnel",
         "swarmy-api",
         "swarmy-scheduler",
         "swarmy-worker",
         "swarmy-gateway",
+        "swarmy-node-api",
     ];
     Error::ensure(
         UNITS.contains(&unit),
-        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway",
+        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-objects-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway, swarmy-node-api",
     )?;
     let (record, planned) = recorded_plan(registry, spec)?;
     let selected = if let Some(host) = host {
@@ -993,13 +1031,13 @@ pub async fn logs(
     let machine = node(selected, user(spec), bucket.as_ref());
     let address = ssh::reachable_address(&machine).await?;
     let command = "host journalctl".to_owned();
-    let mut child = ssh::command(&machine)?
-        .arg(address)
-        .arg(format!(
-            "journalctl --unit {unit} --follow --no-pager --lines 100"
-        ))
-        .spawn()
-        .map_err(Error::ssh(&command))?;
+    let mut child = ssh::node_command(
+        &machine,
+        &address,
+        &format!("journalctl --unit {unit} --follow --no-pager --lines 100"),
+    )?
+    .spawn()
+    .map_err(Error::ssh(&command))?;
     tokio::select! {
         result = child.wait() => {
             let status = result.map_err(Error::ssh(&command))?;

@@ -15,24 +15,34 @@ mod errors;
 mod errors_tests;
 pub use errors::{DomainError, FenceError, Result, StorageError, StoreError};
 mod session;
+mod transaction_log;
 pub(crate) use session::{
     SESSION_CHUNK_MARKER, SESSION_MAX_BYTES, SESSION_RECORD_VERSION, StoredSession,
 };
 pub mod blob;
+mod boot_sets;
+pub use boot_sets::image_probe_volume;
+mod breakers;
 mod computers;
 pub mod credentials;
+mod elastic;
+pub use elastic::{CreationGrant, MAX_ELASTIC_CREATIONS_PER_HOUR};
 mod inference;
-mod inference_wait;
 mod interrupt;
+mod machines;
+mod provisioner;
+mod singleton_lease;
+pub use machines::MachineFilter;
 mod metrics;
 mod metrics_codec;
 mod metrics_model;
 #[cfg(test)]
 mod metrics_tests;
+mod session_wait;
 pub use interrupt::InterruptResult;
 pub use metrics::{
-    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, StageTiming,
-    ToolMetric, TurnMetrics, WaitKind, completion_patches, dispatch_patches,
+    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, MetricWaitKind,
+    StageTiming, ToolMetric, TurnMetrics, completion_patches, dispatch_patches,
 };
 mod selection;
 mod services;
@@ -57,32 +67,49 @@ mod leases;
 mod routes;
 #[cfg(test)]
 mod routes_affinity_tests;
+#[cfg(test)]
+mod stored_value_tests;
 pub use routes::{
     CacheAffinity, ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache,
     RouteFailure, RouteSelection, RouteSnapshot, RouteStepStatus,
 };
+pub mod collector;
 mod nodes;
-pub mod objects;
 mod placed_tools;
+pub use placed_tools::PlacedToolCompletion;
+mod hosting;
+pub use hosting::OpenHosting;
+mod node_credentials;
 mod placements;
+mod sandbox_metadata;
+mod volume_metadata;
 pub use placements::ScratchRecord;
+pub use sandbox_metadata::StoreSandboxMetadata;
+pub use volume_metadata::WriterOpening;
+mod gpu_tools;
 mod plans;
 mod session_images;
 mod timers;
 mod tool_routing;
+pub use tool_routing::ToolRoute;
 mod tools;
 mod turns;
 pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
 mod volumes;
 pub use volumes::PutImageOptions;
 
-#[cfg(any(test, feature = "test-support"))]
-pub use inference_wait::LeaseAudit;
-pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
+pub use breakers::{BreakerCandidate, CredentialKey};
 pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
+#[cfg(any(test, feature = "test-support"))]
+pub use session_wait::LeaseAudit;
+pub use session_wait::{
+    CAPACITY_WAIT_RETRY, CapacityPark, GpuCapacityWait, InferenceFailureWait, InferenceHistory,
+    SessionWait, WaitKind,
+};
 
 use std::{
     future::Future,
+    panic::Location,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -97,10 +124,14 @@ use foundationdb::{
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::AtomicU32;
 use swarmy_core::{
-    AgentRecord, EncodingError, Event, IdempotencyRecord, RequestId, SessionId, SessionRecord,
-    SessionState, decode, encode,
+    AgentId, AgentRecord, EncodingError, Event, IdempotencyRecord, RequestId, SessionId,
+    SessionRecord, SessionState, decode, encode,
 };
+#[cfg(any(test, feature = "test-support"))]
+use tokio::sync::Mutex;
 
 #[cfg(any(test, feature = "test-support"))]
 use swarmy_core::{InflightRecord, SnapshotRef};
@@ -150,6 +181,42 @@ enum StoredValue {
     Blob(String),
 }
 
+type BlobUpload = (String, Vec<u8>);
+
+/// The stored form of `value` as `Store::prepare` writes it, and the blob
+/// that must exist under its key when the value is too large to inline.
+fn stored_encoding<T: Serialize>(value: &T) -> Result<(Vec<u8>, Option<BlobUpload>)> {
+    let bytes = encode(value)?;
+    if bytes.len() > INLINE_LIMIT {
+        let key = swarmy_core::blob_key(&bytes);
+        Ok((encode(&StoredValue::Blob(key.clone()))?, Some((key, bytes))))
+    } else {
+        Ok((encode(&StoredValue::Inline(bytes))?, None))
+    }
+}
+
+/// The stored form of a value written inside a transaction, where no upload
+/// may happen. Refuses a value too large to inline.
+fn prepare_inline<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    match stored_encoding(value)? {
+        (stored, None) => Ok(stored),
+        (_, Some(_)) => Err(StoreError::Storage(StorageError::TooLarge)),
+    }
+}
+
+/// Whether a value written by `Store::prepare` holds `expected`, without
+/// reading object storage. Inline values are decoded and compared; blob
+/// values compare content addresses, because the encoding is deterministic.
+fn stored_matches<T: Serialize + DeserializeOwned + PartialEq>(
+    stored: &[u8],
+    expected: &T,
+) -> Result<bool> {
+    match decode::<StoredValue>(stored)? {
+        StoredValue::Inline(bytes) => Ok(decode::<T>(&bytes)? == *expected),
+        StoredValue::Blob(key) => Ok(key == swarmy_core::blob_key(&encode(expected)?)),
+    }
+}
+
 /// Receiver for the metrics queue, held until the drain task starts.
 type MetricsReceiver = tokio::sync::mpsc::Receiver<metrics::MetricMsg>;
 
@@ -165,6 +232,8 @@ pub struct Store {
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
     session_record_reads: Arc<AtomicU64>,
+    /// Chunk range reads of oversized session records. Tests use it to pin the read shape.
+    session_chunk_reads: Arc<AtomicU64>,
     metering_rows_read: Arc<AtomicU64>,
     metrics_tx: tokio::sync::mpsc::Sender<metrics::MetricMsg>,
     /// Receiver held until the drain task starts. `open` starts the drain
@@ -225,6 +294,7 @@ impl Store {
             blobs,
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            session_chunk_reads: Arc::default(),
             metering_rows_read: Arc::default(),
             metrics_tx,
             metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
@@ -268,6 +338,7 @@ impl Store {
             images: Arc::default(),
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            session_chunk_reads: Arc::default(),
             metering_rows_read: Arc::default(),
             metrics_tx,
             metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
@@ -331,7 +402,8 @@ impl Store {
     /// Observe the store clock. Production reads the wall clock through the
     /// default closure; lease and expiry tests inject a shared manual clock
     /// with [`Store::with_clock`] instead of sleeping out real leases.
-    pub(crate) fn now(&self) -> jiff::Timestamp {
+    #[must_use]
+    pub fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }
 
@@ -352,6 +424,14 @@ impl Store {
         self.session_record_reads.load(Ordering::Relaxed)
     }
 
+    /// Number of chunk range reads made for oversized session records.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn session_chunk_read_count(&self) -> u64 {
+        self.session_chunk_reads.load(Ordering::Relaxed)
+    }
+
     /// Number of metering rows returned by range reads on this store instance.
     /// Test-only entry point, also available with the `test-support` feature.
     #[must_use]
@@ -360,12 +440,49 @@ impl Store {
         self.metering_rows_read.load(Ordering::Relaxed)
     }
 
-    async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
+    /// Run `operation` as one logical store transaction, labelled with the
+    /// caller's source location for the transaction log. A plain function
+    /// returning a future, because `#[track_caller]` does not apply to
+    /// `async fn`. Helpers that call this from inside an `async fn` are
+    /// labelled with the helper's own line.
+    #[track_caller]
+    fn transaction<T, F, Fut>(&self, operation: F) -> impl Future<Output = Result<T>>
     where
         F: Fn(RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        run_transaction(&self.db, &self.transactions, operation).await
+        run_transaction(&self.db, &self.transactions, Location::caller(), operation)
+    }
+
+    /// Race a concurrent writer after the first attempt's reads, before commit.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn transaction_racing<T, F, Fut>(
+        &self,
+        operation: F,
+        race: impl Future<Output = ()>,
+    ) -> Result<(T, u32)>
+    where
+        F: Fn(RetryableTransaction) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let race = Arc::new(Mutex::new(Some(Box::pin(race))));
+        let attempts = AtomicU32::new(0);
+        let value = self
+            .transaction(|trx| {
+                let race = Arc::clone(&race);
+                let attempts = &attempts;
+                let future = operation(trx);
+                async move {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    let value = future.await?;
+                    if let Some(first) = race.lock().await.take() {
+                        first.await;
+                    }
+                    Ok(value)
+                }
+            })
+            .await?;
+        Ok((value, attempts.load(Ordering::Relaxed)))
     }
 
     /// Read every row in `range` across one transaction per page, paging by
@@ -400,49 +517,26 @@ impl Store {
         Ok(out)
     }
 
-    /// Persist binary tool content without adding it to the session event log.
-    ///
-    /// # Errors
-    /// Returns an error if object storage rejects the upload.
-    pub async fn put_tool_blob(&self, bytes: Vec<u8>) -> Result<String> {
-        let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
-        self.blobs.put(&key, bytes.into()).await?;
-        Ok(key)
-    }
-
     /// Read binary tool content written by `put_tool_blob`.
     /// # Errors
     /// Returns an error for a malformed, oversized, missing, or corrupt blob.
     pub async fn get_tool_blob(&self, key: &str) -> Result<bytes::Bytes> {
-        let hash = key
-            .strip_prefix("blobs/")
-            .ok_or(StoreError::Storage(StorageError::Corrupt))?;
-        if hash.len() != 64
-            || !hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !swarmy_core::is_blob_key(key) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
         let bytes = self.blobs.get(key).await?;
-        if bytes.len() > 5 * 1024 * 1024
-            || key != format!("blobs/{}", blake3::hash(&bytes).to_hex())
-        {
+        if bytes.len() > 5 * 1024 * 1024 || key != swarmy_core::blob_key(&bytes) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
         Ok(bytes)
     }
 
     async fn prepare<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
-        let bytes = encode(value)?;
-        let stored = if bytes.len() > INLINE_LIMIT {
-            let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
+        let (stored, blob) = stored_encoding(value)?;
+        if let Some((key, bytes)) = blob {
             self.blobs.put(&key, bytes.into()).await?;
-            StoredValue::Blob(key)
-        } else {
-            StoredValue::Inline(bytes)
-        };
-        Ok(encode(&stored)?)
+        }
+        Ok(stored)
     }
 
     async fn hydrate<T: DeserializeOwned>(&self, value: &[u8]) -> Result<T> {
@@ -450,7 +544,7 @@ impl Store {
             StoredValue::Inline(bytes) => Ok(decode(&bytes)?),
             StoredValue::Blob(key) => {
                 let bytes = self.blobs.get(&key).await?;
-                if key != format!("blobs/{}", blake3::hash(&bytes).to_hex()) {
+                if key != swarmy_core::blob_key(&bytes) {
                     return Err(StoreError::Storage(StorageError::Corrupt));
                 }
                 Ok(decode(&bytes)?)
@@ -458,7 +552,11 @@ impl Store {
         }
     }
 
-    async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
+    async fn decode_session_record(
+        &self,
+        trx: &Transaction,
+        bytes: &[u8],
+    ) -> Result<StoredSession> {
         if bytes.first() != Some(&SESSION_RECORD_VERSION) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
@@ -471,20 +569,33 @@ impl Store {
             if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
                 return Err(StoreError::Storage(StorageError::Corrupt));
             }
+            self.session_chunk_reads.fetch_add(1, Ordering::Relaxed);
+            let rows = scan(
+                trx,
+                self.keys().session_chunk_space(id).range(),
+                usize::from(count),
+            )
+            .await?;
+            if rows.len() != usize::from(count) {
+                return Err(StoreError::Storage(StorageError::Corrupt));
+            }
             let mut payload = Vec::new();
-            for index in 0..count {
-                let chunk = trx
-                    .get(&self.keys().session_chunk(id, index), false)
-                    .await?
-                    .ok_or(StoreError::Storage(StorageError::Corrupt))?;
+            for (index, (key, chunk)) in (0..count).zip(rows) {
+                if key != self.keys().session_chunk(id, index) {
+                    return Err(StoreError::Storage(StorageError::Corrupt));
+                }
                 payload.extend_from_slice(&chunk);
             }
             payload
         } else {
             bytes[1..].to_vec()
         };
-        let mut session: StoredSession =
-            postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
+        postcard::from_bytes(&payload)
+            .map_err(|error| StoreError::from(EncodingError::Payload(error)))
+    }
+
+    async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
+        let mut session = self.decode_session_record(trx, bytes).await?;
         // The agent tombstone is authoritative for every named side session.
         // Deleting a computer cannot atomically rewrite an unbounded set
         // of conversations, so keep this one shared fence until queried.
@@ -529,6 +640,27 @@ impl Store {
             .await?
             .ok_or(StoreError::Domain(DomainError::SessionMissing))?;
         self.decode_session_in(trx, &bytes).await
+    }
+
+    /// Read a known agent's session and deletion tombstone in one round.
+    pub(crate) async fn session_for_agent(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+        agent: AgentId,
+    ) -> Result<StoredSession> {
+        self.session_record_reads.fetch_add(1, Ordering::Relaxed);
+        let key = self.keys().session(id);
+        let (bytes, deleted) =
+            futures::join!(trx.get(&key, false), self.computer_deleted(trx, agent));
+        let bytes = bytes?.ok_or(StoreError::Domain(DomainError::SessionMissing))?;
+        let mut session = self.decode_session_record(trx, &bytes).await?;
+        session.computer_deleted |= if session.agent_id == agent {
+            deleted?
+        } else {
+            self.computer_deleted(trx, session.agent_id).await?
+        };
+        Ok(session)
     }
 
     pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
@@ -939,10 +1071,12 @@ impl Store {
 }
 
 /// One shared transaction runner for `Store` and the metrics drain writer.
-/// Binding-level retries inside one call count once against `counter`.
+/// Binding-level retries inside one call count once against `counter`; the
+/// transaction log records every attempt with the caller's location.
 pub(crate) async fn run_transaction<T, F, Fut>(
     db: &Database,
     counter: &AtomicU64,
+    caller: &'static Location<'static>,
     operation: F,
 ) -> Result<T>
 where
@@ -950,10 +1084,13 @@ where
     Fut: Future<Output = Result<T>>,
 {
     counter.fetch_add(1, Ordering::Relaxed);
+    let timer = transaction_log::TransactionTimer::start(caller);
     let result = db
         .run(|trx, maybe_committed| {
             let operation = &operation;
+            let timer = &timer;
             async move {
+                timer.attempt();
                 if bool::from(maybe_committed) {
                     return Err(FdbBindingError::new_custom_error(Box::new(
                         StoreError::Storage(StorageError::CommitUnknown),
@@ -968,6 +1105,7 @@ where
             }
         })
         .await;
+    timer.finish(result.is_ok());
     result.map_err(|error| match error {
         FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
             Ok(error) => *error,
@@ -979,11 +1117,27 @@ where
     })
 }
 
+/// Snapshot only when relevant changes are covered by a narrower conflict key.
+async fn read_snapshot<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Option<T>> {
+    trx.get(key, true)
+        .await?
+        .map(|value| decode(&value).map_err(Into::into))
+        .transpose()
+}
+
 async fn read<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Option<T>> {
     trx.get(key, false)
         .await?
         .map(|value| decode(&value).map_err(Into::into))
         .transpose()
+}
+
+/// Conflict with a write to `key` without reading it.
+fn add_read_conflict_key(trx: &Transaction, key: &[u8]) -> Result<()> {
+    let mut end = key.to_vec();
+    end.push(0);
+    trx.add_conflict_range(key, &end, foundationdb::options::ConflictRangeType::Read)?;
+    Ok(())
 }
 
 fn write<T: Serialize>(trx: &Transaction, key: &[u8], value: &T) -> Result<()> {

@@ -27,6 +27,9 @@ pub(crate) struct Config {
     /// Kill the node after the command writes its file, then require exactly one retry.
     #[arg(long, requires = "image")]
     pub kill_node_mid_command: bool,
+    /// Prime a boot set, then restart the node with an empty chunk cache before measuring.
+    #[arg(long, requires = "image")]
+    pub prime_boot_set: bool,
     #[arg(long, default_value_t = 5)]
     pub steps: usize,
     #[arg(long, default_value_t = 15)]
@@ -55,6 +58,20 @@ pub(crate) struct Config {
     /// Use a prebuilt swarmy-core binary from this directory instead of building it.
     #[arg(long)]
     pub bin_dir: Option<PathBuf>,
+    /// Run the node inside this named network namespace (`nsenter --net=/run/netns/NAME`).
+    #[arg(long, requires = "image")]
+    pub node_netns: Option<String>,
+    /// The node API listener, reachable from a node network namespace.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub node_api_host: std::net::IpAddr,
+    /// Fail when a node API request (other than register) takes longer than
+    /// this many milliseconds, retries included.
+    #[arg(long, requires = "image")]
+    pub max_node_request_ms: Option<u64>,
+    #[arg(long, requires = "image")]
+    pub max_warm_overhead_ms: Option<u64>,
+    #[arg(long, requires = "image")]
+    pub max_cold_start_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -73,6 +90,14 @@ pub(crate) enum Scenario {
 
 impl Config {
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            (self.node_netns.is_none()
+                && self.max_node_request_ms.is_none()
+                && self.max_warm_overhead_ms.is_none()
+                && self.max_cold_start_ms.is_none())
+                || self.scenario.is_none(),
+            "--node-netns, --max-node-request-ms, --max-warm-overhead-ms and --max-cold-start-ms need the default scenario"
+        );
         ensure!(
             self.sessions > 0 && self.steps > 0,
             "sessions and steps must be positive"
@@ -171,9 +196,14 @@ impl Config {
             .parent()
             .context("executable directory missing")?;
         let mut build = Command::new("cargo");
-        build
-            .current_dir(repo())
-            .args(["build", "--locked", "-p", "swarmy-core-bin"]);
+        build.current_dir(repo()).args([
+            "build",
+            "--locked",
+            "-p",
+            "swarmy-core-bin",
+            "-p",
+            "swarmyd",
+        ]);
         if directory.file_name().is_some_and(|name| name == "release") {
             build.arg("--release");
         }
@@ -211,5 +241,17 @@ mod docs_command_tests {
         let command = super::Config::command();
         swarmy_testkit::check_docs_commands(&root, &[("swarmy-chaos", &command)])
             .expect("documented swarmy-chaos flags match the chaos clap tree");
+    }
+}
+
+#[cfg(test)]
+mod prime_tests {
+    #![deny(clippy::disallowed_methods)]
+    use clap::Parser;
+
+    #[test]
+    fn prime_requires_image() {
+        assert!(super::Config::try_parse_from(["chaos", "--prime-boot-set"]).is_err());
+        assert!(super::Config::try_parse_from(["chaos", "--max-node-request-ms", "500"]).is_err());
     }
 }

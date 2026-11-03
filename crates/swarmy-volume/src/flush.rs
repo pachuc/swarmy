@@ -1,12 +1,11 @@
 //! Durable publication and writer fencing over a locally attached device.
-use jiff::Timestamp;
+use crate::{MetadataError, VolumeMetadata, WriterLease, metadata::with_current_lease};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
-use swarmy_core::{Lease, ManifestId, VolumeId};
-use swarmy_store::Store;
+use swarmy_core::{ManifestId, VolumeId};
 use tokio::sync::Mutex;
 
 use crate::{Result, UploadStats, VolumeDevice, VolumeError};
@@ -31,13 +30,12 @@ pub struct FlushResult {
     pub tool_priority_uploads: u64,
 }
 
-/// Owns a writer's fencing token and committed head. Renew independently of
-/// uploads so a large flush does not let the writer lease expire.
+/// Follows the supplied lease and committed head; renewal belongs to its holder.
 pub struct VolumeWriter {
     device: Arc<VolumeDevice>,
-    store: Store,
+    metadata: Arc<dyn VolumeMetadata>,
     id: VolumeId,
-    lease: Mutex<Lease>,
+    lease: WriterLease,
     head: Mutex<ManifestId>,
     retention: std::num::NonZeroUsize,
 }
@@ -46,19 +44,25 @@ impl VolumeWriter {
     #[must_use]
     pub fn new(
         device: Arc<VolumeDevice>,
-        store: Store,
+        metadata: Arc<dyn VolumeMetadata>,
         id: VolumeId,
-        lease: Lease,
+        lease: WriterLease,
         head: ManifestId,
     ) -> Arc<Self> {
         Self::with_retention(
             device,
-            store,
+            metadata,
             id,
             lease,
             head,
             swarmy_config::VolumeSnapshots::default().retention,
         )
+    }
+
+    /// Stop recording boot reads for this attachment.
+    #[must_use]
+    pub fn take_boot_set(&self) -> swarmy_core::BootSet {
+        self.device.take_boot_set()
     }
 
     #[must_use]
@@ -69,18 +73,18 @@ impl VolumeWriter {
     #[must_use]
     pub fn with_retention(
         device: Arc<VolumeDevice>,
-        store: Store,
+        metadata: Arc<dyn VolumeMetadata>,
         id: VolumeId,
-        lease: Lease,
+        lease: WriterLease,
         head: ManifestId,
         retention: std::num::NonZeroUsize,
     ) -> Arc<Self> {
-        device.protect_uploads(store.clone());
+        device.protect_uploads(metadata.clone());
         Arc::new(Self {
             device,
-            store,
+            metadata,
             id,
-            lease: Mutex::new(lease),
+            lease,
             head: Mutex::new(head),
             retention,
         })
@@ -133,26 +137,20 @@ impl VolumeWriter {
         let result = self
             .device
             .publish(|header| async move {
-                let lease = self.lease.lock().await;
                 loop {
-                    match self
-                        .store
-                        .advance_volume_retained(
-                            self.id,
-                            &lease,
-                            previous,
-                            next,
-                            &header,
-                            self.retention,
-                        )
-                        .await
+                    match with_current_lease(&self.lease, |lease| {
+                        let header = header.clone();
+                        async move {
+                            self.metadata
+                                .publish(self.id, &lease, previous, next, &header, self.retention)
+                                .await
+                        }
+                    })
+                    .await
                     {
                         // The immutable id lets a retry recognize a publication
-                        // whose commit acknowledgement was lost. Pause between
-                        // retries so a flapping database is not hammered.
-                        Err(swarmy_store::StoreError::Storage(
-                            swarmy_store::StorageError::CommitUnknown,
-                        )) => {
+                        // whose commit acknowledgement was lost.
+                        Err(MetadataError::CommitUnknown) => {
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                         result => {
@@ -212,30 +210,14 @@ impl VolumeWriter {
         Ok(result)
     }
 
-    /// Extend the live lease. Call periodically while the NBD server is active.
+    /// Release after the device has disconnected.
     /// # Errors
-    /// Rejects a lost lease or returns database errors.
-    pub async fn renew(&self, duration: Duration) -> Result<()> {
-        let mut lease = self.lease.lock().await;
-        let expiry = Timestamp::now()
-            .checked_add(duration)
-            .map_err(std::io::Error::other)?;
-        *lease = self
-            .store
-            .renew_writer_lease(self.id, &lease, expiry)
-            .await?;
-        Ok(())
-    }
-
-    /// Release after the device has disconnected, preventing a new writer from
-    /// acquiring while the old kernel device can still accept requests.
-    /// # Errors
-    /// Rejects a lost lease or returns database errors.
+    /// Rejects a lost lease or metadata failure.
     pub async fn release(&self) -> Result<()> {
-        let lease = self.lease.lock().await;
-        self.store
-            .release_writer_lease(self.id, &lease, Timestamp::now())
-            .await?;
+        with_current_lease(&self.lease, |lease| async move {
+            self.metadata.release_writer_lease(self.id, &lease).await
+        })
+        .await?;
         Ok(())
     }
 

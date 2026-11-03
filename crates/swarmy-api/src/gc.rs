@@ -2,7 +2,7 @@
 //! returns immediately; the sweep continues in the background and the client
 //! follows its durable run record.
 use super::idempotency::{IdempotencyKey, record_replay, replayed};
-use super::{ApiFailure, ApiResult, AppState, storage, volume};
+use super::{ApiFailure, ApiResult, AppState, storage};
 use axum::{
     Json,
     extract::{Path, State},
@@ -92,7 +92,7 @@ pub(crate) async fn start(
         }
         policy.grace_secs = std::time::Duration::from_secs(grace);
     }
-    let (run, lease, cutoff, started) = match swarmy_volume::gc::begin_with_owner(
+    let (run, lease, cutoff, started) = match swarmy_store::collector::begin_with_owner(
         &state.store,
         policy,
         body.dry_run,
@@ -109,10 +109,16 @@ pub(crate) async fn start(
                 tracing::warn!(error = %swarmy_core::error_chain(&error), "gc replay reservation release failed");
             }
             return Err(match error {
-                swarmy_volume::VolumeError::Store(swarmy_store::StoreError::Fence(
+                swarmy_store::collector::CollectError::Store(swarmy_store::StoreError::Fence(
                     swarmy_store::FenceError::GcLeaseMismatch,
                 )) => busy(),
-                other => volume(other),
+                swarmy_store::collector::CollectError::Store(inner) => storage(inner),
+                other => ApiFailure::caused(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_error",
+                    "garbage collection failed",
+                    &other,
+                ),
             });
         }
     };
@@ -121,7 +127,7 @@ pub(crate) async fn start(
     // GC completion outlives the response; the run lease bounds it and the outcome lands in the durable run record.
     // ast-grep-ignore: no-spawn-in-libraries
     tokio::spawn(async move {
-        if let Err(error) = swarmy_volume::gc::complete(
+        if let Err(error) = swarmy_store::collector::complete(
             &background.store,
             background.objects.clone(),
             policy,

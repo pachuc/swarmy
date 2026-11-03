@@ -162,3 +162,56 @@ remove_unreferenced_retired_binaries() {
         fi
     done
 }
+
+# Preserve all operator settings while replacing only the managed node API lines.
+node_env_with_node_api() {
+    local mode=${1:?mode}
+    while IFS= read -r line || [[ -n $line ]]; do
+        case $line in
+            SWARMY_NODE_API_URL=*|SWARMY_NODE_TOKEN_FILE=*) ;;
+            SWARMY_FDB_CLUSTER_FILE=*|LD_LIBRARY_PATH=*)
+                [[ $mode == stack ]] && printf '%s\n' "$line" ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done
+    printf 'SWARMY_NODE_API_URL=%s\nSWARMY_NODE_TOKEN_FILE=%s\n' "$(swarmy_node_api_url)" "$(swarmy_node_token_file)"
+}
+
+ensure_node_env() {
+    local mode=${1:?mode} file tmp status
+    file=$(swarmy_etc_dir)/node.env
+    umask 077
+    tmp=$(mktemp) || return 1
+    if ! sudo -n cat "$file" | node_env_with_node_api "$mode" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if sudo -n cmp -s "$tmp" "$file"; then
+        status=unchanged
+    else
+        if ! sudo -n install -m 0600 -o root -g root "$tmp" "$file"; then
+            rm -f "$tmp"
+            return 1
+        fi
+        status=changed
+    fi
+    rm -f "$tmp"
+    printf '%s\n' "$status"
+}
+
+token_newer_than_node() {
+    local repo_dir=${1:?node directory} file socket
+    file=$(swarmy_node_token_file)
+    socket=$repo_dir/.swarmy/node/control.sock
+    sudo -n test -e "$socket" || return 0
+    sudo -n test "$file" -nt "$socket"
+}
+
+# Reject incompatible host settings before installing binaries or restarting units.
+check_host_config() {
+    local repo_dir=${1:?node directory} binary=${2:?new swarmy-node binary}
+    if ! sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary --check-config" >&2; then
+        echo "The new build rejects this host's configuration ($repo_dir/.swarmy/config.toml or $(swarmy_etc_dir)/node.env); fix the keys named above and run swarmy swarm upgrade again. Nothing was installed or restarted." >&2
+        return 1
+    fi
+}

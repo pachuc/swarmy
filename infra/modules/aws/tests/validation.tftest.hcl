@@ -101,3 +101,9 @@ run "rejects_bad_network_id" {
   variables { network_id = "vpc-shared" }
   expect_failures = [var.network_id]
 }
+
+run "rejects_a_private_ssm_parameter" {
+  command = plan
+  variables { image = "/my/own/ami-id" }
+  expect_failures = [var.image]
+}

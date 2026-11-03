@@ -5,9 +5,14 @@ use swarmy_config::Settings;
 use swarmy_core::{CredentialRecord, ignore_best_effort};
 use swarmy_llm::auth::{CredentialStore as _, FileCredentialStore};
 
-pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
+pub(crate) async fn run(
+    command: Command,
+    auth_file: Option<PathBuf>,
+    json: bool,
+    swarm: Option<String>,
+) -> Result<()> {
     let settings = Settings::load()?.settings;
-    let (client, endpoint) = swarmy_client::api_client::connect(None)?;
+    let (client, endpoint) = swarmy_cloud::tunnel::connect(swarm.as_deref()).await?;
     match command {
         Command::Import { file, label } => {
             let path = file

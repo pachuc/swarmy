@@ -225,7 +225,7 @@ async fn check_uptime(fixture: &Fixture) {
             (!state.contains("uptime 0s")).then_some(state)
         })
         .await;
-    assert_eq!(state.matches("uptime").count(), 8, "{state}");
+    assert_eq!(state.matches("uptime").count(), 9, "{state}");
     assert!(
         !state.contains("uptime 0s"),
         "uptime did not advance: {state}"

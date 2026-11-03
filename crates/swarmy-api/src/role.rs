@@ -121,6 +121,7 @@ async fn finish_health(
 /// `SHUTDOWN_GRACE` even with subscribers attached. The drain runs on
 /// every exit path, including a serve error, so shutdown keeps every write.
 async fn serve(listener: tokio::net::TcpListener, state: AppState, metrics: Store) -> Result<()> {
+    let listener = axum::serve::ListenerExt::tap_io(listener, swarmy_config::without_nagle);
     let server = axum::serve(listener, router(state))
         .with_graceful_shutdown(swarmy_config::shutdown_signal())
         .into_future();

@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Lease, ManifestId, VolumeId};
 
+/// Writer lease and the manifest head it starts from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriterOpening {
+    pub lease: Lease,
+    pub head: ManifestId,
+    pub header: ManifestHeader,
+}
+
 pub const CHUNK_SIZE: u32 = 256 * 1024;
 
 /// BLAKE3 content address. Zero is reserved for implicit zero data.
@@ -48,6 +56,14 @@ pub struct ImageRecord {
     pub name: String,
     pub tag: crate::ImageTag,
     pub manifest_id: ManifestId,
+}
+
+/// Work asking one node to boot a registered image and record its boot set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageProbe {
+    pub name: String,
+    pub tag: crate::ImageTag,
+    pub manifest: ManifestId,
 }
 
 #[cfg(test)]
@@ -97,4 +113,72 @@ pub struct GcRun {
     pub deleted: u64,
     pub bytes_freed: u64,
     pub duration_ms: u64,
+}
+
+/// Object-store key of a content-addressed payload.
+#[must_use]
+pub fn blob_key(bytes: &[u8]) -> String {
+    format!("blobs/{}", blake3::hash(bytes).to_hex())
+}
+
+/// Whether `key` has the shape `blob_key` produces. It does not check content.
+#[must_use]
+pub fn is_blob_key(key: &str) -> bool {
+    is_hashed_key(key, "blobs/")
+}
+
+/// Most chunks a boot set records: 1 GiB of 256 KiB chunks.
+pub const MAX_BOOT_SET_CHUNKS: usize = 4096;
+
+/// Chunk hashes in first-read order and the manifest leaves that hold them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BootSet {
+    pub leaves: Vec<u32>,
+    pub chunks: Vec<ContentHash>,
+}
+
+/// Content-addressed object key of encoded boot-set bytes.
+#[must_use]
+pub fn boot_set_key(bytes: &[u8]) -> String {
+    format!("bootsets/{}", blake3::hash(bytes).to_hex())
+}
+
+/// Whether the key has the shape of a boot-set object key.
+#[must_use]
+pub fn is_boot_set_key(key: &str) -> bool {
+    is_hashed_key(key, "bootsets/")
+}
+
+fn is_hashed_key(key: &str, prefix: &str) -> bool {
+    key.strip_prefix(prefix).is_some_and(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+#[cfg(test)]
+mod blob_key_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn boot_set_key_shape() {
+        assert!(is_boot_set_key(&boot_set_key(b"x")));
+        assert!(!is_boot_set_key(&blob_key(b"x")));
+        assert!(!is_blob_key(&boot_set_key(b"x")));
+        assert!(!is_boot_set_key("bootsets/"));
+        assert!(!is_boot_set_key(&format!("bootsets/{}", "A".repeat(64))));
+        assert!(!is_boot_set_key(&format!("bootsets/{}", "a".repeat(63))));
+        assert!(!is_boot_set_key(&"a".repeat(64)));
+        assert!(is_blob_key(&blob_key(b"x")));
+    }
+    #[test]
+    fn blob_key_shape() {
+        assert!(is_blob_key(&blob_key(b"x")));
+        assert!(!is_blob_key("blobs/"));
+        assert!(!is_blob_key(&format!("blobs/{}", "A".repeat(64))));
+        assert!(!is_blob_key(&format!("blobs/{}", "a".repeat(63))));
+        assert!(!is_blob_key(&"a".repeat(64)));
+    }
 }

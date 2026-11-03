@@ -134,9 +134,22 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         .unwrap();
     let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
     store.create_volume(volume, base).await.unwrap();
-    let mut node = Node::new(settings);
+    let mut node = Node::new(settings, &store).await;
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
+    // The control socket creates this sandbox without a keeper hold; give the
+    // credential endpoint a live placement for the duration of the test.
+    let placement = store
+        .place(
+            agent.agent_id,
+            node.id,
+            jiff::Timestamp::now()
+                .checked_add(Duration::from_hours(1))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    store.claim_placement(&placement).await.unwrap();
     let sandbox = match node
         .request(Request::Create {
             spec: SandboxSpec {
@@ -146,6 +159,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
                 requirements: swarmy_core::SandboxRequirements::default(),
             },
             disk: BlockDevice { volume_id: volume },
+            writer: node.writer(volume).await,
         })
         .await
     {
@@ -220,8 +234,8 @@ async fn exercise(
     let config = swarmy_volume::server::ServerConfig {
         directory: node.root.path().join(".swarmy/volumes"),
         node: node.id,
-        store: store.clone(),
-        objects: swarmy_store::objects::from_settings(&node.settings).unwrap(),
+        metadata: Arc::new(store.clone()),
+        objects: swarmy_volume::objects::from_settings(&node.settings).unwrap(),
     };
     let snapshot = swarmy_volume::server::checkpoint(&config, volume, Some(bundle.join("rootfs")))
         .await
@@ -264,7 +278,7 @@ async fn scan_chunks(
     id: ManifestId,
     tokens: &[&[u8]],
 ) {
-    let objects = swarmy_store::objects::from_settings(settings).unwrap();
+    let objects = swarmy_volume::objects::from_settings(settings).unwrap();
     let header = store.get_manifest(id).await.unwrap().unwrap();
     let blocks = header.size / u64::from(swarmy_core::CHUNK_SIZE);
     let manifest = swarmy_volume::Manifest::load(objects.as_ref(), header)

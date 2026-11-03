@@ -1,16 +1,59 @@
-use super::step::{PendingCall, pending_tools};
+use super::step::{PendingCall, pending_tools, tool_requests};
 use super::{
     Bus, Context, Event, HeldLease, KillPoint, MAX_SCAN_LIMIT, MessageId, RequestId, Result,
     SandboxArguments, SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage,
     WorkQueue, Worker, execution_result, runnable_partition,
 };
+use swarmy_core::GpuRequirement;
+use swarmy_store::CapacityPark;
+
+/// Stamp only results folded by the first action of a claimed step.
+pub(super) fn woken_patches(
+    events: &[Event],
+    message: &swarmy_core::Message,
+    woken_ns: i64,
+) -> Vec<swarmy_store::MetricPatch> {
+    let calls: std::collections::BTreeSet<_> = message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            swarmy_core::Part::ToolResult { call_id, .. } => Some(call_id.0.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::ToolCallCompleted {
+                request_id,
+                call_id,
+                ..
+            } if calls.contains(call_id.0.as_str()) && seen.insert(request_id.to_string()) => {
+                Some(swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
+                    request_id: request_id.to_string(),
+                    woken_ns: Some(woken_ns),
+                    ..Default::default()
+                }))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+pub(super) enum DispatchOutcome {
+    Sent,
+    Parked,
+    Failed,
+}
 
 enum StoreTool {
     Plan,
     Timer,
+    Gpu,
 }
 
-enum Dispatch<'a> {
+pub(super) enum Dispatch<'a> {
     Calls(&'a [ToolCallRecord]),
     Pending(&'a [ToolJob]),
 }
@@ -36,8 +79,11 @@ impl Worker {
         if jobs.is_empty() {
             return Ok(false);
         }
-        self.dispatch_pending(session, lease, jobs, turn).await?;
-        Ok(true)
+        Ok(!matches!(
+            self.dispatch_pending(session, lease, events, jobs, turn)
+                .await?,
+            DispatchOutcome::Failed
+        ))
     }
 
     /// Store-side tools (plan, timers) complete without leaving the worker.
@@ -47,6 +93,7 @@ impl Worker {
         match tool {
             "update_plan" => Some(StoreTool::Plan),
             "set_timer" | "list_timers" | "cancel_timer" => Some(StoreTool::Timer),
+            name if swarmy_core::is_gpu_tool(name) => Some(StoreTool::Gpu),
             _ => None,
         }
     }
@@ -198,6 +245,21 @@ impl Worker {
                     )
                     .await?
             }
+            Some(StoreTool::Gpu) => {
+                let result = self
+                    .store
+                    .complete_gpu_tool(
+                        session.session_id,
+                        session.head_seq,
+                        token,
+                        request_id,
+                        call,
+                    )
+                    .await;
+                // Invalidate even on error: a commit-unknown failure may have changed the requirement.
+                self.placements.invalidate(session.agent_id).await;
+                result?
+            }
             None => anyhow::bail!("not a store tool: {}", call.tool),
         };
         Ok(event)
@@ -205,39 +267,42 @@ impl Worker {
 
     pub(super) async fn dispatch_calls(
         &self,
-        session: &SessionRecord,
+        session: &mut SessionRecord,
         lease: &HeldLease,
+        events: &mut Vec<Event>,
         calls: &[ToolCallRecord],
         turn: Option<MessageId>,
-    ) -> Result<()> {
-        self.dispatch(session, lease, Dispatch::Calls(calls), turn)
+    ) -> Result<DispatchOutcome> {
+        self.dispatch(session, lease, events, Dispatch::Calls(calls), turn)
             .await
     }
 
     pub(super) async fn dispatch_pending(
         &self,
-        session: &SessionRecord,
+        session: &mut SessionRecord,
         lease: &HeldLease,
+        events: &mut Vec<Event>,
         jobs: Vec<ToolJob>,
         turn: Option<MessageId>,
-    ) -> Result<()> {
-        self.dispatch(session, lease, Dispatch::Pending(&jobs), turn)
+    ) -> Result<DispatchOutcome> {
+        self.dispatch(session, lease, events, Dispatch::Pending(&jobs), turn)
             .await
     }
 
     async fn dispatch(
         &self,
-        session: &SessionRecord,
+        session: &mut SessionRecord,
         lease: &HeldLease,
+        live_events: &mut Vec<Event>,
         dispatch: Dispatch<'_>,
         turn: Option<MessageId>,
-    ) -> Result<()> {
+    ) -> Result<DispatchOutcome> {
         let mut retried = false;
         let (placement, events, jobs) = loop {
             // The failed transaction made no changes; an eviction may have
             // released a cached placement before its expiry, so the first
             // placement or lease fence invalidates the cache and retries once.
-            let placement = self
+            let placement = match self
                 .placements
                 .resolve_at(
                     &self.store,
@@ -245,7 +310,26 @@ impl Worker {
                     self.config.placement_lease,
                     self.now(),
                 )
-                .await?;
+                .await
+            {
+                Ok(placement) => placement,
+                Err(error) => {
+                    let Some(no_room) = error.downcast_ref::<crate::placement::NoEligibleNode>()
+                    else {
+                        return Err(error);
+                    };
+                    return self
+                        .wait_for_capacity(
+                            session,
+                            lease,
+                            live_events,
+                            &dispatch,
+                            no_room.requirement,
+                            no_room.shortfall,
+                        )
+                        .await;
+                }
+            };
             let mut token = lease.lock().await;
             let result = match dispatch {
                 Dispatch::Calls(calls) => {
@@ -289,7 +373,121 @@ impl Worker {
         self.kill(KillPoint::AfterRelease);
         self.publish_events(session.session_id, &events).await?;
         self.publish_tools(session.session_id, &placement, jobs, turn)
-            .await
+            .await?;
+        Ok(DispatchOutcome::Sent)
+    }
+
+    async fn wait_for_capacity(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        dispatch: &Dispatch<'_>,
+        requirement: GpuRequirement,
+        shortfall: Option<swarmy_core::Shortfall>,
+    ) -> Result<DispatchOutcome> {
+        let id = session.session_id;
+        let mut token = lease.lock().await;
+        let outcome = self
+            .store
+            .park_for_capacity(
+                id,
+                token.as_ref().context("lease released")?,
+                requirement,
+                shortfall,
+                self.now(),
+                self.config.max_session_wait,
+            )
+            .await?;
+        match outcome {
+            CapacityPark::Parked { notice } => {
+                token.release();
+                drop(token);
+                if let Some(event) = notice {
+                    session.head_seq = event.seq();
+                    self.publish_events(id, std::slice::from_ref(&event))
+                        .await?;
+                    events.push(*event);
+                }
+                tracing::info!(session_id = %id, ?requirement, ?shortfall, "no node can host the computer; waiting for capacity");
+                Ok(DispatchOutcome::Parked)
+            }
+            CapacityPark::Expired => {
+                drop(token);
+                let error = swarmy_core::capacity_wait_exceeded(
+                    requirement,
+                    shortfall,
+                    self.config.max_session_wait,
+                );
+                self.fail_dispatch(session, lease, events, dispatch, &error)
+                    .await?;
+                Ok(DispatchOutcome::Failed)
+            }
+        }
+    }
+
+    /// Refuse every call in a mixed GPU response in a single append.
+    pub(super) async fn refuse_mixed_gpu_batch(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        calls: &[ToolCallRecord],
+    ) -> Result<bool> {
+        if calls.len() > 1
+            && calls
+                .iter()
+                .any(|call| swarmy_core::is_gpu_tool(&call.tool))
+        {
+            self.fail_dispatch(
+                session,
+                lease,
+                events,
+                &Dispatch::Calls(calls),
+                swarmy_core::GPU_TOOL_NOT_ALONE,
+            )
+            .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(super) async fn fail_dispatch(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        dispatch: &Dispatch<'_>,
+        error: &str,
+    ) -> Result<()> {
+        let mut batch = Vec::new();
+        match dispatch {
+            Dispatch::Calls(calls) => {
+                let requests = tool_requests(session, calls);
+                for (event, call) in requests.iter().zip(*calls) {
+                    if let Event::ToolCallRequested { request_id, .. } = event {
+                        batch.push(Event::ToolCallCompleted {
+                            seq: 0,
+                            request_id: *request_id,
+                            call_id: call.call_id.clone(),
+                            result: execution_result(&call.tool, Err(error.to_owned())),
+                        });
+                    }
+                }
+                batch.splice(0..0, requests);
+            }
+            Dispatch::Pending(jobs) => {
+                for job in *jobs {
+                    batch.push(Event::ToolCallCompleted {
+                        seq: 0,
+                        request_id: job.request_id,
+                        call_id: job.call_id.clone(),
+                        result: execution_result(job.arguments.name(), Err(error.to_owned())),
+                    });
+                }
+            }
+        }
+        self.append(session, lease, events, &batch).await
     }
 
     pub(super) async fn publish_tools(
@@ -308,8 +506,14 @@ impl Worker {
             self.observe_dispatch(id, turn, job.request_id, job.arguments.name())
                 .await;
             self.bus
-                .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
-                .await
+                .publish_work_once(
+                    &WorkQueue::NodeTools(placement.node_id),
+                    &job,
+                    &job.request_id.to_string(),
+                )
+                .await?;
+            self.republish.published(job.request_id, self.now()).await;
+            Ok::<(), anyhow::Error>(())
         }))
         .await?;
         Ok(())
@@ -359,32 +563,39 @@ impl Worker {
             .await
     }
 
-    /// Recover one dispatch through the worker clock.
+    /// Recover one dispatch through the worker clock. The fence and epoch
+    /// checks run on every scan; the publish is repeated only when due.
     pub(super) async fn route_tool(&self, job: &ToolJob) -> Result<()> {
         if self.store.fail_deleted_computer_tool(job).await? {
+            self.republish.forget(job.request_id).await;
             return Ok(());
         }
         let placement = self.place(job.session_id).await?;
-        if self.store.route_tool_job(job, &placement).await? {
-            let turn = self.store.request_turn_id(job.request_id).await?;
-            if let Some(turn) = turn {
-                let event = Bus::turn_event(
-                    job.session_id,
-                    turn,
-                    TurnStage::ToolDispatched,
-                    Some(job.request_id),
-                );
-                self.bus.record_turn(&event).await;
-                self.store.observe_turn_metrics(
-                    job.session_id,
-                    turn,
-                    swarmy_store::dispatch_patches(event, job.arguments.name()),
-                );
+        match self.store.route_tool_job(job, &placement).await? {
+            swarmy_store::ToolRoute::Gone => {
+                self.republish.forget(job.request_id).await;
+                return Ok(());
             }
-            self.bus
-                .publish_work(&WorkQueue::NodeTools(placement.node_id), job)
-                .await?;
+            // The node is running it; the schedule resumes if its claim lapses.
+            swarmy_store::ToolRoute::Claimed => return Ok(()),
+            swarmy_store::ToolRoute::Publish => {}
         }
+        if !self.republish.due(job.request_id, self.now()).await {
+            return Ok(());
+        }
+        let turn = self.store.request_turn_id(job.request_id).await?;
+        self.observe_dispatch(job.session_id, turn, job.request_id, job.arguments.name())
+            .await;
+        // Every worker and every republish shares the request id, so the
+        // stream drops copies inside its duplicate window.
+        self.bus
+            .publish_work_once(
+                &WorkQueue::NodeTools(placement.node_id),
+                job,
+                &job.request_id.to_string(),
+            )
+            .await?;
+        self.republish.published(job.request_id, self.now()).await;
         Ok(())
     }
 
@@ -392,10 +603,13 @@ impl Worker {
     /// shared clock past lease expiry instead of sleeping out real leases;
     /// production keeps the default wall clock.
     pub(crate) async fn recover_tools(&self) -> Result<()> {
+        let scan_started = self.now();
+        let mut seen = std::collections::HashSet::new();
         let mut after = None;
         loop {
             let jobs = self.store.scan_tool_jobs(after, MAX_SCAN_LIMIT).await?;
             if jobs.is_empty() {
+                self.republish.retain(&seen, scan_started).await;
                 return Ok(());
             }
             for job in jobs {
@@ -406,7 +620,9 @@ impl Worker {
                     .contains(&runnable_partition(job.session_id))
                 {
                     // A dead node cannot consume its own redeliveries. The durable
-                    // outbox scan re-resolves every retry and repairs lost publishes.
+                    // outbox scan re-resolves every pending job on each tick and
+                    // republishes it only when due, without rewriting the claim fence.
+                    seen.insert(job.request_id);
                     let result = self.route_tool(&job).await;
                     if let Err(error) = result {
                         tracing::warn!(error = %swarmy_core::error_chain(&*error), request_id = %job.request_id, "tool recovery failed");

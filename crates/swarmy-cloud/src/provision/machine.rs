@@ -14,6 +14,8 @@ pub struct Machine {
     /// The swarm bucket and keys; none selects the stack host's object store.
     pub bucket: Option<BucketSpec>,
     pub services: bool,
+    /// Node id to persist before provisioning; only the provisioner sets it.
+    pub node_id: Option<swarmy_core::NodeId>,
 }
 impl Machine {
     #[must_use]

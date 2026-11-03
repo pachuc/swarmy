@@ -71,10 +71,40 @@ cat > "$tmp/.cargo/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 set -u
 [ "${1:-}" = -E ] && shift
+[ "${1:-}" = -u ] && shift 2
 case "${1:-}" in
   umount|python3) exit 0 ;;
 esac
 exec "$@"
+EOF
+
+cat > "$tmp/.cargo/bin/ip" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FAKE_IP_LOG:-}" ] || echo "ip $*" >> "$FAKE_IP_LOG"
+if [ "${1:-}" = netns ] && [ "${2:-}" = exec ]; then shift 3; exec "$@"; fi
+exit 0
+EOF
+# Stub nsenter: drop the --net=PATH option and run the command in place.
+cat > "$tmp/.cargo/bin/nsenter" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in --net=*) shift ;; esac
+exec "$@"
+EOF
+cat > "$tmp/.cargo/bin/tc" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FAKE_IP_LOG:-}" ] || echo "tc $*" >> "$FAKE_IP_LOG"
+exit 0
+EOF
+cat > "$tmp/.cargo/bin/modprobe" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$tmp/chaos/target/debug/swarmy-chaos" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FAKE_CHAOS_LOG:-}" ] || printf '%s\n' "$*" >> "$FAKE_CHAOS_LOG"
+[ "${FAKE_CHAOS_FAIL:-0}" = 1 ] && exit 1
+printf '== tool timings (ms)\nfake-timing-row\nTOOL_TIMINGS {"calls":[]}\n'
+printf 'chaos passed\n'
 EOF
 
 cat > "$tmp/.cargo/bin/systemctl" <<'EOF'
@@ -104,9 +134,13 @@ exit 0
 EOF
 
 : > "$tmp/chaos/.dev/env"
+# latency.sh packages the recipe next to the built disk.
+mkdir -p "$tmp/chaos/images/base-ubuntu"
+: > "$tmp/chaos/images/base-ubuntu/recipe.toml"
 
 chmod +x "$tmp/.cargo/bin/git" "$tmp/.cargo/bin/cargo" "$tmp/.cargo/bin/sudo" \
-  "$tmp/.cargo/bin/systemctl" "$tmp/chaos/scripts/dev-stack.sh" \
+  "$tmp/.cargo/bin/systemctl" "$tmp/.cargo/bin/ip" "$tmp/.cargo/bin/tc" "$tmp/.cargo/bin/nsenter" \
+  "$tmp/.cargo/bin/modprobe" "$tmp/chaos/target/debug/swarmy-chaos" "$tmp/chaos/scripts/dev-stack.sh" \
   "$tmp/chaos/scripts/chaos-ci.sh" "$tmp/chaos/target/debug/swarmy"
 
 run_case() {
@@ -191,5 +225,28 @@ check_exit_and_marker "rerun compile failure" 1 "SUITES_EXIT=1"
 # rerun-suite.sh: a failed checkout stops the run with exit 2.
 run_case env HOME="$tmp" FAKE_FETCH_FAIL=1 bash "$node_suites/rerun-suite.sh" b swarmyd node
 check_exit_and_marker "rerun checkout failure" 2 "checkout failed"
+
+# Latency suite exercises both links and never names a host interface.
+: > "$tmp/ip.log"
+run_case env HOME="$tmp" FAKE_IP_LOG="$tmp/ip.log" FAKE_CHAOS_LOG="$tmp/chaos.log" bash "$node_suites/latency.sh" b
+check_exit_and_marker "latency pass" 0 "SUITES_EXIT=0"
+grep -q -- '--max-warm-overhead-ms 1000 --max-cold-start-ms 60000 --max-node-request-ms 325' "$tmp/chaos.log"
+grep -q -- '--max-warm-overhead-ms 2000 --max-node-request-ms 550' "$tmp/chaos.log"
+[ "$(grep -c -- '--max-cold-start-ms' "$tmp/chaos.log")" = 1 ]
+grep -q '^fake-timing-row' "$tmp/out.log" || { echo "node-suites test failed: timing row missing"; exit 1; }
+grep -q '^TOOL_TIMINGS ' "$tmp/out.log" || { echo "node-suites test failed: timing JSON missing"; exit 1; }
+grep -q 'tc qdisc replace dev swl-p root netem delay 87500us' "$tmp/ip.log"
+grep -q 'tc qdisc replace dev swl-n root netem delay 200000us' "$tmp/ip.log"
+grep -q 'ip netns del swl-node' "$tmp/ip.log"
+grep -q 'ip netns del swl-primary' "$tmp/ip.log"
+if grep -oE '(^| )(dev|link set) [^ ]+' "$tmp/ip.log" | grep -vE ' (lo|swl-p|swl-n)$'; then
+  echo "node-suites test failed: latency.sh named a host interface"; exit 1
+fi
+: > "$tmp/ip.log"
+run_case env HOME="$tmp" FAKE_IP_LOG="$tmp/ip.log" FAKE_CHAOS_FAIL=1 LATENCY_RTTS=175 bash "$node_suites/latency.sh" b
+check_exit_and_marker "latency failure" 1 "SUITES_EXIT=1"
+grep -q 'ip netns del swl-primary' "$tmp/ip.log"
+run_case env HOME="$tmp" FAKE_FETCH_FAIL=1 bash "$node_suites/latency.sh" b
+check_exit_and_marker "latency checkout failure" 2 "checkout failed"
 
 printf 'node-suites: ok\n'

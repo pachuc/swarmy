@@ -40,6 +40,9 @@ parse_provision_args
 [[ $(release_bundle_dir /x) == /x/.swarmy/release ]]
 bundle=$(mktemp -d)
 trap 'rm -rf "$bundle"' EXIT
+printf '#!/bin/sh\n' > "$bundle/swarmy-node"
+chmod +x "$bundle/swarmy-node"
+check_release_bundle "$bundle" node
 printf '#!/bin/sh\n' > "$bundle/swarmy-core"
 chmod +x "$bundle/swarmy-core"
 touch "$bundle/libfdb_c.so"
@@ -47,20 +50,42 @@ check_release_bundle "$bundle" node
 if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing client' >&2; exit 1; fi
 printf '#!/bin/sh\n' > "$bundle/swarmy"
 chmod +x "$bundle/swarmy"
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing provisioner' >&2; exit 1; fi
+printf '#!/bin/sh\n' > "$bundle/swarmy-provisioner"
+chmod +x "$bundle/swarmy-provisioner"
 check_release_bundle "$bundle" stack
 rm "$bundle/libfdb_c.so"
-if check_release_bundle "$bundle" node 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
-zero=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist)
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
+check_release_bundle "$bundle" node
+zero=$(node_environment stack /tmp/checkout 0 /this-mount-does-not-exist)
 [[ $zero == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero == *'SWARMY_NODE_SANDBOXES=0'* ]]
 [[ $zero == *'SWARMY_NODE_DISK_BYTES=0'* ]]
 [[ $zero =~ SWARMY_NODE_MEMORY_BYTES=[0-9]+ ]]
-positive=$(node_environment /tmp/checkout 4 /tmp)
+positive=$(node_environment node /tmp/checkout 4 /tmp)
+[[ $positive != *SWARMY_FDB_CLUSTER_FILE* && $positive != *LD_LIBRARY_PATH* ]]
+stack_env=$(node_environment stack /tmp/checkout 4 /tmp)
+[[ $stack_env == *SWARMY_FDB_CLUSTER_FILE* && $stack_env == *LD_LIBRARY_PATH=/tmp/.local/lib* ]]
 [[ $positive == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
+[[ $positive == *'SWARMY_NODE_API_URL=http://127.0.0.1:8743'* ]]
+[[ $positive == *'SWARMY_NODE_TOKEN_FILE=/etc/swarmy/node-token'* ]]
 [[ $positive == *'SWARMY_NODE_SANDBOXES=4'* ]]
 [[ $positive == *'SWARMY_NODE_DISK_BYTES='* ]]
 [[ $positive != *'SWARMY_NODE_DISK_BYTES=0'* ]]
-zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist example-bucket eu-west-1)
+# A 4 GiB machine reports about 3832 MiB: 760 MiB after the 3072 MiB reserve.
+printf 'MemTotal:        3923968 kB\n' > "$bundle/meminfo"
+[[ $(SWARMY_MEMINFO=$bundle/meminfo node_memory_bytes) == 796917760 ]]
+SWARMY_MEMINFO=$bundle/meminfo check_node_memory 0
+if SWARMY_MEMINFO=$bundle/meminfo check_node_memory 1 2>"$bundle/memory-err"; then
+    echo 'accepted a host below one default sandbox' >&2; exit 1
+fi
+grep -q 'less than one default 768 MiB sandbox' "$bundle/memory-err"
+grep -q 'at least 3840 MiB' "$bundle/memory-err"
+# Exactly the reserve plus one default sandbox is enough.
+printf 'MemTotal:        3932160 kB\n' > "$bundle/meminfo"
+[[ $(SWARMY_MEMINFO=$bundle/meminfo node_memory_bytes) == 805306368 ]]
+SWARMY_MEMINFO=$bundle/meminfo check_node_memory 1
+zero_bucket=$(node_environment stack /tmp/checkout 0 /this-mount-does-not-exist example-bucket eu-west-1)
 [[ $zero_bucket == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero_bucket == *'SWARMY_NODE_SANDBOXES=0'* ]]
 [[ $zero_bucket == *'SWARMY_NODE_DISK_BYTES=0'* ]]
@@ -69,12 +94,12 @@ zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist exampl
 [[ $zero_bucket == *'SWARMY_S3_REGION=eu-west-1'* ]]
 [[ $zero_bucket == *'SWARMY_DEV_SKIP_S3=1'* ]]
 [[ $zero_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=true'* ]]
-positive_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1)
+positive_bucket=$(node_environment stack /tmp/checkout 4 /tmp example-bucket eu-west-1)
 [[ $positive_bucket == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
 [[ $positive_bucket == *'SWARMY_NODE_SANDBOXES=4'* ]]
 [[ $positive_bucket == *'SWARMY_S3_BUCKET=example-bucket'* ]]
 # The service library derives from the checkout, never a hardcoded login.
-[[ $positive == *'LD_LIBRARY_PATH=/tmp/.local/lib'* ]]
+[[ $stack_env == *'LD_LIBRARY_PATH=/tmp/.local/lib'* ]]
 [[ $positive != *ubuntu* ]]
 [[ $zero != *ubuntu* ]]
 
@@ -128,7 +153,7 @@ for invalid in relative dir: device: dir:relative; do
 done
 # Static buckets carry no key lines at all: the keys are merged later by
 # merge_static_s3_keys, and empty lines ahead of the real ones would be stale.
-static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team false true)
+static_bucket=$(node_environment stack /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team false true)
 [[ $static_bucket == *'SWARMY_S3_ENDPOINT=https://objects.example.invalid'* ]]
 [[ $static_bucket == *'SWARMY_S3_PREFIX=runs/team'* ]]
 [[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
@@ -146,6 +171,8 @@ swarmyd.service enabled'
 SWARMY_TEST_INSTALLED='swarmy-tunnel.service enabled
 swarmy-gateway.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-gateway.service' ]]
+SWARMY_TEST_INSTALLED='swarmy-provisioner.service enabled'
+[[ $(list_installed_control_units) == 'swarmy-provisioner.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-stack.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-stack.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-stack.service enabled
@@ -170,7 +197,7 @@ if read_shared_list probe_result empty_producer >/dev/null 2>&1; then
     exit 1
 fi
 swarmy_unit_table() { return 1; }
-if read_shared_list probe_result swarmy_mode_build_args stack >/dev/null 2>&1; then
+if read_shared_list probe_result swarmy_unit_names >/dev/null 2>&1; then
     echo 'failing unit table looked fine' >&2
     exit 1
 fi
@@ -194,6 +221,31 @@ while IFS= read -r binary; do
 done < <(retired_binary_names)
 [[ -f $fake_root/usr/local/bin/swarmy-core ]]
 unset -f sudo
+# Reprovisioning a joined node removes only swarmy-owned database leftovers.
+leftovers=$fake_root/leftovers
+mkdir -p "$leftovers/home/.local/bin" "$leftovers/home/.local/lib" "$leftovers/node/.dev" "$leftovers/node/.swarmy" "$fake_root/usr/local/lib/swarmy" "$fake_root/etc/ld.so.conf.d"
+touch "$leftovers/home/.local/bin/fdbserver" "$leftovers/home/.local/lib/libfdb_c.so" "$leftovers/node/.dev/fdb.cluster" "$leftovers/node/.swarmy/remote-tools-version" "$fake_root/usr/local/lib/swarmy/libfdb_c.so"
+swarmy_core_library_dir() { printf '%s/usr/local/lib/swarmy\n' "$fake_root"; }
+swarmy_library_conf() { printf '%s/etc/ld.so.conf.d/swarmy-provisioned.conf\n' "$fake_root"; }
+printf '%s\n' "$(swarmy_owned_marker)" > "$(swarmy_library_conf)"
+# The absolute binary paths are redirected by a fake sudo; other paths live under fake_root.
+sudo() {
+    [[ $1 == -n ]] && shift
+    if [[ $1 == ldconfig ]]; then return 0; fi
+    local arg
+    local args=()
+    for arg in "$@"; do
+        if [[ $arg == /usr/local/bin/* ]]; then arg=$fake_root$arg; fi
+        args+=("$arg")
+    done
+    "${args[@]}"
+}
+remove_node_host_leftovers "$leftovers/node" "$leftovers/home"
+[[ ! -e $fake_root/usr/local/lib/swarmy && ! -e $(swarmy_library_conf) && ! -e $leftovers/home/.local/bin/fdbserver && ! -e $leftovers/home/.local/lib/libfdb_c.so && ! -e $leftovers/node/.dev/fdb.cluster && ! -e $fake_root/usr/local/bin/swarmy-core ]]
+printf 'host owned\n' > "$(swarmy_library_conf)"
+remove_node_host_leftovers "$leftovers/node" "$leftovers/home"
+[[ $(cat "$(swarmy_library_conf)") == 'host owned' ]]
+unset -f sudo swarmy_core_library_dir swarmy_library_conf
 [[ $(node_source_dir /x) == /x/source ]]
 
 # Restore the table after testing its failure path.
@@ -203,11 +255,19 @@ set_unit_inputs stack deploy-user '' false /mnt/swarmy-local
 node_text=$(render_unit swarmyd.service)
 [[ $node_text == *'Requires=swarmy-stack.service'* ]]
 [[ $node_text == *'RequiresMountsFor=/mnt/swarmy-local'* ]]
-[[ $node_text == *'ExecStart=/usr/local/bin/swarmy-core node'* ]]
+[[ $node_text == *'ExecStart=/usr/local/bin/swarmy-node'* ]]
 [[ $node_text == *'WorkingDirectory=/home/deploy-user/swarmy'* ]]
 stack_text=$(render_unit swarmy-stack.service)
 [[ $stack_text == *'User=deploy-user'* ]]
 [[ $stack_text == *'ExecStart=/bin/bash /home/deploy-user/swarmy/scripts/dev-stack.sh start'* ]]
+provisioner_text=$(render_unit "$(swarmy_provisioner_unit)")
+[[ $provisioner_text == *'ExecStart=/usr/local/bin/swarmy-provisioner'* ]]
+[[ $provisioner_text == *'KillMode=mixed'* ]]
+[[ $provisioner_text == *'Requires=swarmy-stack.service'* ]]
+[[ $(swarmy_mode_binaries stack) == $'swarmy\nswarmy-core\nswarmy-node\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_binaries node) == 'swarmy-node' ]]
+[[ $(swarmy_mode_build_args stack) == $'-p\nswarmy-core-bin\n-p\nswarmyd\n-p\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_build_args node) == $'-p\nswarmyd' ]]
 scheduler_text=$(render_unit swarmy-scheduler.service)
 [[ $scheduler_text == *'ExecStart=/usr/local/bin/swarmy-core scheduler'* ]]
 [[ $scheduler_text == *'Requires=swarmy-stack.service'* ]]
@@ -215,9 +275,33 @@ set_unit_inputs node deploy-user 10.0.0.1 true ''
 node_text=$(render_unit swarmyd.service)
 [[ $node_text == *'Wants=swarmy-tunnel.service'* && $node_text != *RequiresMountsFor* ]]
 tunnel_text=$(render_unit swarmy-tunnel.service)
-[[ $tunnel_text == *'-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1'* ]]
+[[ $tunnel_text == *'-L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743 deploy-user@10.0.0.1'* ]]
+[[ $tunnel_text == *'Wants=swarmy-objects-tunnel.service'* && $tunnel_text != *8333* ]]
+objects_text=$(render_unit swarmy-objects-tunnel.service)
+for expected in '-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1' 'PartOf=swarmy-tunnel.service' '-i /etc/swarmy/tunnel-key' 'UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts' '/dev/tcp/127.0.0.1/8333'; do
+    [[ $objects_text == *"$expected"* ]]
+done
+[[ $objects_text != *4222* && $objects_text != *8743* ]]
+[[ $(grep '^After=' <<< "$node_text") == *swarmy-objects-tunnel.service* ]]
+[[ $(swarmy_node_tunnel_units) == $'swarmy-tunnel.service\nswarmy-objects-tunnel.service' ]]
+[[ $(swarmy_mode_backing_unit node) == swarmy-tunnel.service ]]
+[[ $(stack_only_units) != *swarmy-objects-tunnel.service* ]]
+printf 'control_and_object_traffic_use_separate_tunnels: ok\n'
+for expected in '-L 127.0.0.1:8743:127.0.0.1:8743' '-o ServerAliveInterval=5' '-o ServerAliveCountMax=3'; do
+    [[ $tunnel_text == *"$expected"* ]]
+done
+[[ $tunnel_text != *ServerAliveInterval=15* && $tunnel_text != *4500* ]]
+[[ $tunnel_text == *'/dev/tcp/127.0.0.1/8743'* ]]
+node_api_text=$(render_unit swarmy-node-api.service)
+[[ $(swarmy_service_units) == *swarmy-node-api.service* ]]
+[[ $node_api_text == *'ExecStart=/usr/local/bin/swarmy-core node-api'* ]]
+[[ $node_api_text == *'Requires=swarmy-stack.service'* ]]
+[[ $(swarmy_unit_role swarmy-node-api.service) == node-api ]]
 set_unit_inputs node deploy-user 10.0.0.1 false ''
-[[ $(render_unit swarmy-tunnel.service) != *8333* ]]
+[[ $(swarmy_node_tunnel_units) == swarmy-tunnel.service ]]
+[[ $(render_unit swarmy-tunnel.service) != *8333* && $(render_unit swarmy-tunnel.service) != *objects* ]]
+[[ $(render_unit swarmyd.service) != *swarmy-objects-tunnel.service* ]]
+printf 'bucket_node_keeps_only_control_tunnel: ok\n'
 for args in 'other deploy-user 10.0.0.1 false /mnt' 'node deploy-user _ false /mnt' 'node deploy-user 10.0.0.1 yes /mnt' 'node deploy-user 10.0.0.1 false relative'; do
     read -r -a parts <<< "$args"
     if set_unit_inputs "${parts[@]}" 2>/dev/null; then echo "accepted invalid unit inputs: $args" >&2; exit 1; fi
@@ -238,4 +322,106 @@ printf 'b09dbe0\n' > "$commit_dir/.swarmy-source-commit"
 printf 'not a commit\n' > "$commit_dir/.swarmy-source-commit"
 [[ -z $(source_git_commit "$commit_dir") ]]
 rm -rf "$commit_dir"
+# GPU provisioning: card detection reads a fake sysfs tree.
+pci=$(mktemp -d)
+pci_device() { mkdir -p "$pci/$1"; printf '%s\n' "$2" >"$pci/$1/vendor"; printf '%s\n' "$3" >"$pci/$1/class"; }
+if SWARMY_PCI_DEVICES_DIR=$pci nvidia_card_present; then echo 'found a card in an empty bus' >&2; exit 1; fi
+pci_device 0000:00:02.0 0x8086 0x030000
+pci_device 0000:31:00.1 0x10de 0x040300
+if SWARMY_PCI_DEVICES_DIR=$pci nvidia_card_present; then echo 'counted an Intel display or an NVIDIA audio function as a card' >&2; exit 1; fi
+pci_device 0000:31:00.0 0x10de 0x030200
+SWARMY_PCI_DEVICES_DIR=$pci nvidia_card_present
+rm -rf "$pci"
+
+# Stub sudo logs commands; a driver install provides nvidia-smi unless broken.
+stub=$(mktemp -d)
+for tool in sed dirname chmod cat sleep; do ln -s "$(command -v "$tool")" "$stub/$tool"; done
+printf '#!/bin/sh\nexit 0\n' >"$stub/curl"
+cat >"$stub/sudo" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $* == *"apt-get install -y nvidia-driver-580-server"* ]]; then
+    printf '#!/bin/sh\nexit 0\n' >"$STUB_DIR/nvidia-smi"
+    chmod +x "$STUB_DIR/nvidia-smi"
+fi
+EOS
+chmod +x "$stub/curl" "$stub/sudo"
+export STUB_DIR=$stub STUB_LOG=$stub/log
+generate='nvidia-ctk cdi generate --output=/etc/cdi/nvidia.json --format=json'
+printf '#!/bin/sh\nexit 0\n' >"$stub/nvidia-smi"; printf '#!/bin/sh\nexit 0\n' >"$stub/nvidia-ctk"; chmod +x "$stub/nvidia-smi" "$stub/nvidia-ctk"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+[[ $(<"$STUB_LOG") == "install -d -m 0755 /etc/cdi"$'\n'"$generate" ]]
+rm "$stub/nvidia-ctk"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+grep -qx -- '-E apt-get install -y nvidia-container-toolkit' "$STUB_LOG"
+grep -q 'tee /etc/apt/sources.list.d/nvidia-container-toolkit.list' "$STUB_LOG"
+if grep -q 'nvidia-driver' "$STUB_LOG"; then echo 'installed a driver although nvidia-smi was present' >&2; exit 1; fi
+[[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
+rm "$stub/nvidia-smi"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+[[ $(head -n 1 "$STUB_LOG") == '-E apt-get install -y nvidia-driver-580-server' ]]
+grep -qx 'modprobe nvidia' "$STUB_LOG"
+[[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
+rm "$stub/nvidia-smi"
+# A card that answers a moment after the module loads is not a reboot case.
+cat >"$stub/sudo" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $* == *"apt-get install -y nvidia-driver-580-server"* ]]; then
+    printf '#!/bin/sh\nn=$(cat "$STUB_DIR/smi-calls" 2>/dev/null || echo 0)\necho $((n + 1)) >"$STUB_DIR/smi-calls"\n[ "$n" -ge 2 ] || { echo "NVIDIA-SMI has failed"; exit 9; }\n' >"$STUB_DIR/nvidia-smi"
+    chmod +x "$STUB_DIR/nvidia-smi"
+fi
+EOS
+chmod +x "$stub/sudo"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+[[ $(<"$stub/smi-calls") == 3 ]]
+[[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
+rm "$stub/nvidia-smi" "$stub/smi-calls"
+cat >"$stub/sudo" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $* == *"apt-get install -y nvidia-driver-580-server"* ]]; then
+    printf '#!/bin/sh\necho "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver"\nexit 9\n' >"$STUB_DIR/nvidia-smi"
+    chmod +x "$STUB_DIR/nvidia-smi"
+fi
+EOS
+chmod +x "$stub/sudo"
+: >"$STUB_LOG"
+if ( PATH=$stub; export SWARMY_NVIDIA_WAIT_SECONDS=2; provision_nvidia ) 2>"$stub/err"; then echo 'continued with an unloaded driver' >&2; exit 1; fi
+grep -q 'reboot' "$stub/err"
+grep -q 'could not communicate' "$stub/err"
+if grep -q 'cdi generate' "$STUB_LOG"; then echo 'wrote a spec with an unloaded driver' >&2; exit 1; fi
+rm -rf "$stub"
+printf 'GPU provisioning: ok\n'
+[[ $(swarmy_modules_file) == /etc/modules-load.d/swarmy-provisioned.conf ]]
+[[ $(swarmy_library_conf) == /etc/ld.so.conf.d/swarmy-provisioned.conf ]]
+[[ $(swarmy_owned_marker) == '# Written by swarmy provisioning; swarmy swarm down removes this file.' ]]
 echo 'remote provision argument and environment tests passed'
+
+# Local stack credential issuance keeps the token on stdin and checks identity.
+(
+    repo="$bundle/local-repo"
+    export SWARMY_ETC_DIR="$bundle/local-etc"
+    mkdir -p "$repo/.swarmy" "$SWARMY_ETC_DIR"
+    : > "$SWARMY_ETC_DIR/node.env"
+    printf '%s\n' 01ARZ3NDEKTSV4RRFFQ69G5FAV > "$repo/.swarmy/node-id"
+    sudo() { [[ $1 == -n ]] && shift; "$@"; }
+    cat > "$bundle/local-core" <<'CORE'
+#!/bin/sh
+[ "$1 $2 $3" = 'node-credential issue 01ARZ3NDEKTSV4RRFFQ69G5FAV' ] || exit 1
+printf '%s\n' 'swn.01ARZ3NDEKTSV4RRFFQ69G5FAV.c2VjcmV0'
+CORE
+    chmod +x "$bundle/local-core"
+    issue_local_node_credential "$repo" "$bundle/local-core"
+    [[ $(<"$SWARMY_ETC_DIR/node-token") == 'swn.01ARZ3NDEKTSV4RRFFQ69G5FAV.c2VjcmV0' ]]
+    [[ $(stat -c %a "$SWARMY_ETC_DIR/node-token") == 600 ]]
+    rm "$SWARMY_ETC_DIR/node-token"
+    printf '%s\n' not-an-id > "$repo/.swarmy/node-id"
+    if issue_local_node_credential "$repo" "$bundle/local-core" 2>/dev/null; then exit 1; fi
+    [[ ! -e $SWARMY_ETC_DIR/node-token ]]
+    printf '%s\n' 01ARZ3NDEKTSV4RRFFQ69G5FAV > "$repo/.swarmy/node-id"
+    printf '#!/bin/sh\nprintf "%%s\\n" "swn.01ARZ3NDEKTSV4RRFFQ69G5FAA.c2VjcmV0"\n' > "$bundle/other-core"
+    chmod +x "$bundle/other-core"
+    if issue_local_node_credential "$repo" "$bundle/other-core" 2>/dev/null; then exit 1; fi
+    [[ ! -e $SWARMY_ETC_DIR/node-token ]]
+)

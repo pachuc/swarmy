@@ -168,17 +168,21 @@ pub(crate) async fn upload(
     let (_spool, path) = spool(&state, validated.size, body).await?;
     let store = state.store.clone();
     let objects = state.objects.clone();
-    let built = swarmy_volume::image::upload_image_protected(&path, objects, store.clone())
-        .await
-        .map_err(|failure| match failure {
-            swarmy_volume::image::ImageError::Volume(inner) => volume(inner),
-            other => ApiFailure::caused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "image upload failed",
-                &other,
-            ),
-        })?;
+    let built = swarmy_volume::image::upload_image_protected(
+        &path,
+        objects,
+        std::sync::Arc::new(store.clone()),
+    )
+    .await
+    .map_err(|failure| match failure {
+        swarmy_volume::image::ImageError::Volume(inner) => volume(&inner),
+        other => ApiFailure::caused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "image upload failed",
+            &other,
+        ),
+    })?;
     let manifest_id = ManifestId::from_ulid(ulid::Ulid::generate());
     store
         .put_manifest(manifest_id, &built.header)
@@ -197,6 +201,22 @@ pub(crate) async fn upload(
         )
         .await
         .map_err(storage)?;
+    let probe = swarmy_core::ImageProbe {
+        name: validated.name.clone(),
+        tag: ImageTag(validated.tag.clone()),
+        manifest: manifest_id,
+    };
+    if let Err(error) = state
+        .bus
+        .publish_work_once(
+            &swarmy_bus::WorkQueue::ImageProbes,
+            &probe,
+            &manifest_id.to_string(),
+        )
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), image = %format!("{}:{}", probe.name, probe.tag.0), "image probe not queued; the first boot records its boot set");
+    }
     let response = api::ImageUpload {
         name: validated.name.clone(),
         tag: validated.tag.clone(),
