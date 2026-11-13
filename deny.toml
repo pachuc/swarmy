@@ -17,6 +17,11 @@ ignore = [
     # Namespace memory exhaustion in quick-xml 0.38.4. Same reachability and
     # upgrade path as RUSTSEC-2026-0194 above.
     { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38.4 parses only our own S3 endpoints via object_store 0.12; upgrade waits on object_store" },
+    # pin-utils 0.1.0 is unmaintained (repository archived 2026-10-01), not a vulnerability.
+    # aws-smithy-http, aws-smithy-runtime, and aws-smithy-types pull it in directly.
+    # Added 2026-11-13; re-check on each lock refresh and drop once the AWS SDK
+    # crates stop depending on pin-utils.
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils 0.1.0 is unmaintained, not vulnerable; re-check each lock refresh and drop when AWS SDK dependencies remove it" },
 ]
 
 [licenses]
