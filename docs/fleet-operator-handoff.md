@@ -276,6 +276,41 @@ Things this cycle has taught:
   stack, and they can fail for reasons the task never touched. Hand each
   such failure to an idle worker as an investigation task that must find the
   root cause and must not loosen the test.
+- When the suite node is the bottleneck, stack squash merges on candidate
+  branches (`swarmy/cand-<sha>`, plain pushes to a new name) instead of the
+  integration branch. Validate only the newest candidate with the full set
+  (`--ci`, the default root suites, `--plus`, `--latency`), and move the
+  integration branch forward by a plain fast-forward push to a candidate
+  that passed. Cancel waiting runs for superseded candidates by PID; never
+  kill a run that already holds the lock. Free a worker whose branch is on a
+  candidate with `fleet release --force`.
+- Workers cannot run tasky. `fleet launch` sends the task body, so check the
+  body loaded (its length matches the recipe file, no literal `<suffix>`
+  left) before launching; a report saying "the task body specified no Done
+  when" means the recipe never arrived. Follow-up instructions through
+  `fleet resume` must carry the recipe text itself.
+- A recipe for a task that builds on unmerged work names its base candidate
+  branch (write `cand-NEXT` and fill it in at launch), and the operator
+  drops the tasky dependency on the still-testing prerequisite when
+  launching from that candidate.
+- The suite queue runs the copies of `root-suites.sh`, `root-suites-plus.sh`
+  and `latency.sh` in `~`, not the checkout's. A goal that changes them
+  needs the candidate's versions installed (write a temp file and `mv`, so
+  a running script keeps its file); stale copies made suites fail for
+  reasons the code never had.
+- Root, chaos and latency suites caught defects CI could not see (a node
+  shutdown order that hung the node, a lost wakeup that left a session
+  asleep, transaction timeouts at 175 ms). Run them on every candidate of a
+  goal that changes node, store or worker code.
+- When the owner is away and a design question is genuinely open, ask a
+  Fable reviewer on high effort with the owner's context and follow its
+  decision; one such review found that bursts took two round trips because
+  of Nagle, where the proposed fix was to loosen the gate.
+- A production deploy such as `swarm upgrade hz` with a store wipe needs the
+  owner's explicit go-ahead in their own words; the auto-mode classifier
+  blocks it otherwise. Real-hardware runs on AWS get a per-run budget,
+  append to `~/aws-gpu-spend.md`, and pipe both stdout and stderr through
+  `sed -E 's/[0-9]{12}/<acct>/g'` so the account id never prints.
 
 ## The suite node
 
@@ -294,7 +329,11 @@ changing them. Queue a run detached:
 `setsid nohup bash ~/suite-queue.sh --at COMMIT --chaos swarmy/xxxxxx >/dev/null 2>&1 </dev/null &`
 (`--ci` runs every CI job's `make check-*` target through `ci-local.sh`; `--plus` adds the image, vol, and nbd suites to the default node and chaos
 set; `--node` runs the node suite alone; `--chaos` runs the three chaos
-suites and `chaos-ci.sh`; `--only "PACKAGE TEST"` runs one suite;
+suites and `chaos-ci.sh`; `--latency` runs `latency.sh`, which puts the
+primary dev stack and a node in two network namespaces joined by a veth pair
+with netem delay on the veth ends only, and gates sandbox start, warm
+tool-call overhead and every node API request at 175 ms and 400 ms round
+trip; `--only "PACKAGE TEST"` runs one suite;
 `--at COMMIT` pins the commit, because the branch head is read when the
 run starts and a worker still pushing can leave it uncompilable). Every run takes `~/suite.lock`, so queued runs
 wait for each other however they were started. Each branch appends
